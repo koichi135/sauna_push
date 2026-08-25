@@ -16,6 +16,11 @@ export interface HudState {
   /** 投入可能か（クールダウン・手持ち） */
   canThrow: boolean;
   throwReady: boolean;
+  /** ロウリュモード中か */
+  loylyActive: boolean;
+  /** ロウリュのクールタイム進捗 0（明け）..1（直後） */
+  loylyCooldownRatio: number;
+  loylyCooldownSec: number;
 }
 
 /**
@@ -38,6 +43,8 @@ export class HUD {
   private readonly stoneCountBox: HTMLElement;
   private readonly coldBathBtn = el<HTMLButtonElement>('cold-bath-btn');
   private readonly coldBathHint = el('cold-bath-hint');
+  private readonly loylyBtn = el<HTMLButtonElement>('loyly-btn');
+  private readonly loylyCooldown = el('loyly-cooldown');
   private readonly throwLane = el('throw-lane');
   private readonly throwLaneMarker = el('throw-lane-marker');
   private readonly aimOverlay = el('aim-overlay');
@@ -67,17 +74,24 @@ export class HUD {
     return this.coldBathBtn;
   }
 
-  /** 温度帯の色分けを一度だけ作る。BALANCE の帯定義が唯一の情報源。 */
+  get loylyButton(): HTMLButtonElement {
+    return this.loylyBtn;
+  }
+
+  /**
+   * 温度帯の色分けを一度だけ作る。BALANCE の帯定義が唯一の情報源。
+   * 温度計なので上が高温・下が低温になるよう、帯は逆順に積む。
+   */
   private buildTempBands(): void {
     const max = BALANCE.temperature.max;
     this.tempBands.replaceChildren(
-      ...TEMP_BANDS.map((band) => {
+      ...[...TEMP_BANDS].reverse().map((band) => {
         const div = document.createElement('div');
         div.className = 'band';
         div.dataset.band = band.id;
         div.style.background = band.color;
-        // 帯の幅は温度レンジに比例させる
-        div.style.width = `${((band.max - band.min + 1) / (max + 1)) * 100}%`;
+        // 帯の高さは温度レンジに比例させる
+        div.style.height = `${((band.max - band.min + 1) / (max + 1)) * 100}%`;
         return div;
       }),
     );
@@ -93,9 +107,9 @@ export class HUD {
       this.scoreValue.textContent = String(this.displayedScore);
     }
 
-    // 温度
+    // 温度（縦の温度計。下端が 0℃、上端が 100℃）
     const tempPct = (gauges.temperature / BALANCE.temperature.max) * 100;
-    this.tempMarker.style.left = `${tempPct}%`;
+    this.tempMarker.style.bottom = `${tempPct}%`;
     this.tempValue.textContent = String(Math.round(gauges.temperature));
     const band = gauges.currentBand;
     this.tempBand.textContent = band.label;
@@ -134,9 +148,16 @@ export class HUD {
       this.coldBathHint.textContent = `×${state.pendingMultiplier.toFixed(1)} / ${state.pendingDuration.toFixed(1)}秒`;
     }
 
-    // 投入レーン
+    // ロウリュボタン: クールタイムは下から埋まる影で表す
+    this.loylyBtn.classList.toggle('active', state.loylyActive);
+    const cooling = state.loylyCooldownRatio > 0;
+    this.loylyBtn.classList.toggle('cooling', cooling);
+    this.loylyCooldown.style.height = `${state.loylyCooldownRatio * 100}%`;
+    this.loylyBtn.disabled = cooling;
+
+    // 投入レーン。ロウリュモード中は投入できない（水をかけるモードのため）
     this.throwLane.classList.toggle('cooldown', !state.throwReady);
-    this.throwLane.classList.toggle('disabled', !state.canThrow);
+    this.throwLane.classList.toggle('disabled', !state.canThrow || state.loylyActive);
   }
 
   /** 投入位置にフィードバックを出す */
@@ -148,6 +169,7 @@ export class HUD {
     this.throwLaneMarker.classList.add('hit');
   }
 
+  /** ロウリュモードの表示。remainingRatio はモード残り時間の割合 */
   setAiming(active: boolean, remainingRatio = 1): void {
     this.aimOverlay.hidden = !active;
     if (active) this.aimTimerFill.style.width = `${Math.max(0, remainingRatio) * 100}%`;

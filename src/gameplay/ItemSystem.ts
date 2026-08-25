@@ -8,8 +8,11 @@ import type { GameContext } from './GameContext';
  * ロスト溝に落ちた場合は消滅のみで効果なし。
  */
 
-/** 仕様 8章で承認済みのアイテムのみ。8.3 の追加案は未承認のため実装しない。 */
-export type ItemId = 'loyly' | 'oropo';
+/**
+ * 仕様 8章で承認済みのアイテムのみ。8.3 の追加案は未承認のため実装しない。
+ * ロウリュは常設ボタン＋クールタイム制に変わったため、盤面アイテムからは外した。
+ */
+export type ItemId = 'oropo';
 
 export interface ItemDef {
   readonly id: ItemId;
@@ -25,18 +28,6 @@ export interface ItemDef {
 }
 
 export const ITEM_DEFS: readonly ItemDef[] = [
-  {
-    id: 'loyly',
-    weight: 1,
-    modelKey: 'ladle',
-    label: 'ロウリュ',
-    color: 0xffd27f,
-    requiresAiming: true,
-    onPayout(ctx) {
-      // 実際の温度上昇は着弾点が決まってから ItemSystem.fireLoyly で行う
-      ctx.beginAiming();
-    },
-  },
   {
     id: 'oropo',
     weight: 1,
@@ -106,18 +97,6 @@ export class ItemSystem {
   /** ペイアウトまたはロストで盤面から消えたとき */
   notifyRemoved(tracked: TrackedBody): void {
     this.onBoard.delete(tracked.id);
-  }
-
-  /**
-   * ロウリュ着弾（仕様 8.1）。
-   * 着弾点から半径 radius 内のストーン数 n に応じて温度上昇量を返す。
-   *   Δtemp = 25.0 + min(n, 10) * 1.5   （最大 +40）
-   */
-  fireLoyly(x: number, z: number): { stones: number; deltaTemp: number } {
-    const l = BALANCE.items.loyly;
-    const stones = this.physics.countStonesNear(x, z, l.radius);
-    const deltaTemp = l.baseTemp + Math.min(stones, l.maxStones) * l.perStoneTemp;
-    return { stones, deltaTemp };
   }
 
   reset(): void {
