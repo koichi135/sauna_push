@@ -61,6 +61,8 @@ export class Game implements GameContext {
   private highScore = loadHighScore();
   private hasSeenTutorial = false;
   private gameOverDelay = 0;
+  /** 照準に入れない状態で取得したロウリュの持ち越し数 */
+  private pendingLoyly = 0;
   /** 水風呂の歪み演出の強さ 0..1 */
   private waterAmount = 0;
 
@@ -234,12 +236,26 @@ export class Game implements GameContext {
 
   private beginAimingInternal(): void {
     const from = this.machine.state;
-    if (from !== 'PLAYING' && from !== 'FEVER') return;
+    if (from !== 'PLAYING' && from !== 'FEVER') {
+      // 入水演出中や照準中にもロウリュはペイアウトしうる。物理は状態に関わらず
+      // 進んでいるため。ここで捨てると取ったのに何も起きないので、持ち越す。
+      this.pendingLoyly += 1;
+      return;
+    }
     this.aimReturnState = from;
     this.aimTimer = 0;
     if (this.machine.transition('AIMING')) {
       this.hud.setAiming(true, 1);
     }
+  }
+
+  /** 持ち越したロウリュを、照準に入れる状態に戻ったところで消化する */
+  private consumePendingLoyly(): void {
+    if (this.pendingLoyly <= 0) return;
+    const state = this.machine.state;
+    if (state !== 'PLAYING' && state !== 'FEVER') return;
+    this.pendingLoyly -= 1;
+    this.beginAimingInternal();
   }
 
   private endAiming(): void {
@@ -288,6 +304,7 @@ export class Game implements GameContext {
       });
       this.updateItems(dt);
       this.updateAiming(dt);
+      this.consumePendingLoyly();
       this.checkAutoColdBath();
     }
 
@@ -680,6 +697,7 @@ export class Game implements GameContext {
     this.setOutdoorMood(false);
     this.cameraRig.setShot('play');
     this.gameOverDelay = 0;
+    this.pendingLoyly = 0;
     this.waterAmount = 0;
   }
 
