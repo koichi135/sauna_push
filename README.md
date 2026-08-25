@@ -21,6 +21,20 @@ npm run typecheck  # 型チェックのみ
 強制発火ボタンが入っている。スライダーは `BALANCE` を実行時に書き換えるので、
 実機で触りながらそのまま詰められる。
 
+## 公開（GitHub Pages）
+
+`main` への push で `.github/workflows/deploy.yml` が走り、GitHub Pages へ自動デプロイされる。
+Actions タブから手動実行（workflow_dispatch）もできる。
+
+公開先: `https://koichi135.github.io/sauna_push/`
+
+`npm run build` は `tsc --noEmit` を含むので、型エラーがあればデプロイ前に落ちる。
+Vite の `base` は `'./'`（相対）にしてあり、リポジトリ名のサブパス配下でもそのまま動く。
+
+初回のみ、リポジトリの **Settings > Pages > Source** が **GitHub Actions** になっている
+必要がある。ワークフローの `configure-pages` に `enablement: true` を付けてあるので
+自動で設定されることが多いが、権限の都合で失敗する場合は手動で切り替える。
+
 ## 技術スタック
 
 | 項目 | 採用 |
