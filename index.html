@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <!-- 縦持ち固定・ピンチズーム無効。全操作シングルタップのため（仕様 9章） -->
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
+    />
+    <meta name="theme-color" content="#1a0f0a" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="description" content="サウナ・コインプッシャー — 適温を保ち、ととのえ。" />
+    <title>サウナ・コインプッシャー</title>
+  </head>
+  <body>
+    <div id="app">
+      <canvas id="game-canvas"></canvas>
+
+      <!-- 高温時の周縁の赤み／低体力の警告（仕様 10章 2） -->
+      <div id="vignette" class="vignette" aria-hidden="true"></div>
+      <!-- 水風呂の青フラッシュ（仕様 10章 4） -->
+      <div id="flash" class="flash" aria-hidden="true"></div>
+
+      <!-- ================= HUD（仕様 9章） ================= -->
+      <div id="hud" class="hud" hidden>
+        <div class="hud-top">
+          <div class="score-block">
+            <div class="score-label">SCORE</div>
+            <div id="score-value" class="score-value">0</div>
+            <div id="fever-badge" class="fever-badge" hidden>×1.0</div>
+          </div>
+
+          <div class="temp-block">
+            <div class="temp-header">
+              <span class="temp-icon">🔥</span>
+              <span class="temp-label">室温</span>
+              <span id="temp-band" class="temp-band">適温</span>
+              <span id="temp-value" class="temp-value">55</span>
+            </div>
+            <!-- 帯は常時色で表示する。数値だけでは判断できないため（仕様 6.1） -->
+            <div class="bar temp-bar">
+              <div id="temp-bands" class="temp-bands"></div>
+              <div id="temp-marker" class="temp-marker"></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="hud-bottom">
+          <div class="gauge-row">
+            <span class="gauge-icon">♨</span>
+            <span class="gauge-name">ととのい</span>
+            <div class="bar gauge-bar totonoi">
+              <div id="totonoi-fill" class="fill"></div>
+            </div>
+          </div>
+
+          <div class="gauge-row">
+            <span class="gauge-icon">❤</span>
+            <span class="gauge-name">体力</span>
+            <div class="bar gauge-bar stamina">
+              <div id="stamina-fill" class="fill"></div>
+            </div>
+            <div class="stone-count"><span class="stone-icon">🪨</span>×<span id="stone-count">30</span></div>
+          </div>
+
+          <button id="cold-bath-btn" class="cold-bath-btn" type="button" hidden>
+            <span class="cold-bath-label">水風呂へ</span>
+            <span id="cold-bath-hint" class="cold-bath-hint">×1.0 / 8.0秒</span>
+          </button>
+
+          <!-- ストーン投入レーン。タップした X 位置から投入される（仕様 5章） -->
+          <div id="throw-lane" class="throw-lane">
+            <div id="throw-lane-marker" class="throw-lane-marker"></div>
+            <span class="throw-lane-text">タップしてストーン投入</span>
+          </div>
+        </div>
+
+        <!-- ロウリュ照準（仕様 8.1） -->
+        <div id="aim-overlay" class="aim-overlay" hidden>
+          <div class="aim-title">ロウリュ！</div>
+          <div class="aim-sub">ストーンの山をタップ</div>
+          <div id="aim-timer" class="aim-timer"><div id="aim-timer-fill" class="aim-timer-fill"></div></div>
+        </div>
+
+        <div id="toast-area" class="toast-area" aria-live="polite"></div>
+      </div>
+
+      <!-- ================= オーバーレイ ================= -->
+      <div id="overlay" class="overlay">
+        <!-- ローディング -->
+        <section id="screen-loading" class="screen">
+          <div class="loading-steam">♨</div>
+          <p class="loading-text">サウナを温めています…</p>
+        </section>
+
+        <!-- タイトル -->
+        <section id="screen-title" class="screen" hidden>
+          <h1 class="title">サウナ<span class="title-accent">・</span>コインプッシャー</h1>
+          <p class="tagline">熱すぎず、ぬるすぎず。<br />適温を保って、ととのえ。</p>
+          <div class="highscore">ハイスコア <span id="title-highscore">0</span></div>
+          <button id="btn-start" class="btn btn-primary" type="button">サウナに入る</button>
+          <button id="btn-tutorial" class="btn btn-ghost" type="button">あそびかた</button>
+          <button id="btn-mute" class="btn btn-icon" type="button" aria-label="音のオン・オフ">🔊</button>
+        </section>
+
+        <!-- チュートリアル -->
+        <section id="screen-tutorial" class="screen" hidden>
+          <h2 class="screen-title">あそびかた</h2>
+          <ol class="tutorial-list">
+            <li><b>投入</b> — 画面下のレーンをタップした位置からストーンが落ちます。</li>
+            <li><b>ペイアウト</b> — 手前に落ちたストーンは +2 個。同時にストーブに入り<b>室温が上がります</b>。</li>
+            <li><b>適温を保つ</b> — 60〜84℃が基本。<b>85〜94℃が最高効率</b>ですが体力が減ります。95℃以上は効率が落ちます。</li>
+            <li><b>ととのい</b> — MAXで「水風呂へ」が点灯。<b>入水した瞬間の温度がそのまま倍率</b>になります。</li>
+            <li><b>外気浴</b> — 倍率つきのフィーバー。投入し放題・体力ダメージなし。</li>
+            <li><b>体力0でゲームオーバー</b>。ストーン切れでも体力が減り続けます。</li>
+          </ol>
+          <button id="btn-tutorial-close" class="btn btn-primary" type="button">はじめる</button>
+        </section>
+
+        <!-- リザルト -->
+        <section id="screen-result" class="screen" hidden>
+          <h2 class="screen-title">のぼせました</h2>
+          <div id="result-newrecord" class="new-record" hidden>NEW RECORD!</div>
+          <div class="result-score" id="result-score">0</div>
+          <dl class="result-stats">
+            <div><dt>ととのい回数</dt><dd id="result-totonoi">0</dd></div>
+            <div><dt>ペイアウト</dt><dd id="result-payout">0</dd></div>
+            <div><dt>ハイスコア</dt><dd id="result-highscore">0</dd></div>
+          </dl>
+          <button id="btn-retry" class="btn btn-primary" type="button">もう一度ととのう</button>
+          <button id="btn-to-title" class="btn btn-ghost" type="button">タイトルへ</button>
+        </section>
+
+        <!-- ポーズ -->
+        <section id="screen-paused" class="screen" hidden>
+          <h2 class="screen-title">休憩中</h2>
+          <p class="tagline">画面に戻ると再開します。</p>
+          <button id="btn-resume" class="btn btn-primary" type="button">再開</button>
+        </section>
+      </div>
+    </div>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
