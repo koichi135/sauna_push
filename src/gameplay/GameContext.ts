@@ -10,8 +10,6 @@ import type { Gauges } from './Gauges';
 export interface GameContext {
   readonly bus: EventBus;
   readonly gauges: Gauges;
-  /** ロウリュの照準モードへ入る */
-  beginAiming(): void;
   /** 体力を回復する */
   healStamina(amount: number): void;
   /** 一時的なスローモーション演出 */

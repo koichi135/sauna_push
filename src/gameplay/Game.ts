@@ -7,7 +7,7 @@ import { PhysicsWorld, type TrackedBody } from '../physics/PhysicsWorld';
 import { AudioEngine } from '../audio/AudioEngine';
 import { buildItemMesh, buildScene, type SceneRefs } from '../view/SceneBuilder';
 import { CameraRig } from '../view/CameraRig';
-import { DistortionPass, SteamSystem } from '../view/Effects';
+import { DistortionPass, SplashEffect, SteamSystem } from '../view/Effects';
 import { QualityScaler } from '../view/QualityScaler';
 import { HUD } from '../ui/HUD';
 import { Overlays } from '../ui/Overlays';
@@ -17,6 +17,7 @@ import { Payout, loadHighScore, saveHighScore } from './Payout';
 import { Pusher } from './Pusher';
 import { StoneSpawner } from './StoneSpawner';
 import { FeverController, feverParamsFor } from './FeverController';
+import { LoylyController } from './Loyly';
 import { ItemSystem, itemDef, type ItemId } from './ItemSystem';
 import type { GameContext } from './GameContext';
 
@@ -36,6 +37,7 @@ export class Game implements GameContext {
   private readonly refs: SceneRefs;
   private readonly cameraRig: CameraRig;
   private readonly steam = new SteamSystem();
+  private readonly splash = new SplashEffect();
   private readonly distortion: DistortionPass;
   private readonly quality: QualityScaler;
 
@@ -44,6 +46,7 @@ export class Game implements GameContext {
   private readonly spawner: StoneSpawner;
   private readonly payout: Payout;
   private readonly fever = new FeverController();
+  private readonly loyly = new LoylyController();
   private readonly items: ItemSystem;
 
   private readonly machine = new StateMachine();
@@ -55,14 +58,13 @@ export class Game implements GameContext {
 
   /** アイテムの TrackedBody id → 3Dメッシュ */
   private readonly itemMeshes = new Map<number, THREE.Mesh>();
-  /** 照準に入る直前の状態。PLAYING か FEVER */
+  /** ロウリュモードに入る直前の状態。PLAYING か FEVER */
   private aimReturnState: GameState = 'PLAYING';
-  private aimTimer = 0;
+  /** 濡れているストーンの位置。蒸気の発生源として毎フレーム集める */
+  private wetSources: { x: number; y: number; z: number }[] = [];
   private highScore = loadHighScore();
   private hasSeenTutorial = false;
   private gameOverDelay = 0;
-  /** 照準に入れない状態で取得したロウリュの持ち越し数 */
-  private pendingLoyly = 0;
   /** 水風呂の歪み演出の強さ 0..1 */
   private waterAmount = 0;
 
@@ -70,6 +72,7 @@ export class Game implements GameContext {
   private readonly tmpPos = new THREE.Vector3();
   private readonly tmpQuat = new THREE.Quaternion();
   private readonly tmpScale = new THREE.Vector3(1, 1, 1);
+  private readonly tmpColor = new THREE.Color();
   private readonly raycaster = new THREE.Raycaster();
   private readonly boardPlane = new THREE.Plane(
     new THREE.Vector3(0, 1, 0),
@@ -95,6 +98,7 @@ export class Game implements GameContext {
 
     this.refs = buildScene();
     this.refs.scene.add(this.steam.points);
+    this.refs.scene.add(this.splash.group);
     this.cameraRig = new CameraRig(window.innerWidth / window.innerHeight);
     this.distortion = new DistortionPass(window.innerWidth, window.innerHeight);
 
@@ -156,12 +160,19 @@ export class Game implements GameContext {
       this.enterColdBath(false);
     });
 
-    // 盤面タップ: 照準モードのときだけ意味を持つ
+    // ロウリュ: 押すとロウリュモードに入る。クールタイム中は反応しない
+    this.hud.loylyButton.addEventListener('pointerdown', (ev) => {
+      ev.preventDefault();
+      void this.audio.unlock();
+      this.toggleLoylyMode();
+    });
+
+    // 盤面タップ: ロウリュモードのときだけ意味を持つ（水をかける）
     this.renderer.domElement.addEventListener('pointerdown', (ev) => {
       void this.audio.unlock();
       if (this.machine.state !== 'AIMING') return;
       if (this.isInDeadZone(ev.clientX, ev.clientY)) return;
-      this.fireLoylyAtScreen(ev.clientX, ev.clientY);
+      this.pourWaterAtScreen(ev.clientX, ev.clientY);
     });
 
     window.addEventListener('resize', () => this.onResize());
@@ -179,7 +190,7 @@ export class Game implements GameContext {
    */
   private isInDeadZone(x: number, y: number): boolean {
     const pad = BALANCE.input.deadZonePx;
-    const targets = [this.hud.throwLaneElement, this.hud.coldBathButton];
+    const targets = [this.hud.throwLaneElement, this.hud.coldBathButton, this.hud.loylyButton];
     for (const node of targets) {
       if (node.hidden) continue;
       const r = node.getBoundingClientRect();
@@ -196,66 +207,75 @@ export class Game implements GameContext {
     if (this.machine.state === 'AIMING') return;
     const fever = this.fever.isFever;
     if (!this.payout.canThrow(fever)) return;
-    const stone = this.spawner.tryThrow(normalizedX, this.loop.now, fever);
+    // 画面座標の左右と world の X は向きが逆（BalanceConfig の screenToWorldXSign 参照）。
+    // ここで符号を合わせないと、タップした側と反対側にストーンが落ちる。
+    const worldX = normalizedX * BALANCE.spawn.screenToWorldXSign;
+    const stone = this.spawner.tryThrow(worldX, this.loop.now, fever);
     if (!stone) return;
     this.payout.consumeForThrow(fever);
+    // レーンのフィードバックはタップした画面位置に出す（符号を戻さない）
     this.hud.flashThrowLane(normalizedX);
     this.bus.emit('STONE_THROWN', { x: stone.body.translation().x });
   }
 
-  /** タップ位置を盤面平面へ投影してロウリュを撃つ（仕様 8.1） */
-  private fireLoylyAtScreen(clientX: number, clientY: number): void {
+  /** ロウリュボタン。押すとモードに入り、モード中に押すと取り消す */
+  private toggleLoylyMode(): void {
+    if (this.machine.state === 'AIMING') {
+      this.loyly.cancel();
+      this.endAiming();
+      return;
+    }
+    if (this.machine.inputBlocked) return;
+    const from = this.machine.state;
+    if (from !== 'PLAYING' && from !== 'FEVER') return;
+    if (!this.loyly.tryActivate()) return;
+
+    this.aimReturnState = from;
+    if (this.machine.transition('AIMING')) {
+      this.hud.setAiming(true, 1);
+      this.hud.toast('水をかける場所をタップ');
+    } else {
+      this.loyly.cancel();
+    }
+  }
+
+  /** タップ位置を盤面平面へ投影して、そこに水をかける */
+  private pourWaterAtScreen(clientX: number, clientY: number): void {
     const ndc = new THREE.Vector2(
       (clientX / window.innerWidth) * 2 - 1,
       -(clientY / window.innerHeight) * 2 + 1,
     );
     this.raycaster.setFromCamera(ndc, this.cameraRig.camera);
     const hit = new THREE.Vector3();
+    // レイキャストは画面座標をそのまま world に写すので、投入レーンと違い符号の補正は要らない
     if (!this.raycaster.ray.intersectPlane(this.boardPlane, hit)) {
-      this.fireLoyly(0, 0);
+      this.pourWater(0, 0);
       return;
     }
     const f = BALANCE.field;
-    this.fireLoyly(
+    this.pourWater(
       THREE.MathUtils.clamp(hit.x, -f.halfWidth, f.halfWidth),
       THREE.MathUtils.clamp(hit.z, f.payoutZ, f.backZ),
     );
   }
 
-  private fireLoyly(x: number, z: number): void {
-    const { stones, deltaTemp } = this.items.fireLoyly(x, z);
-    this.gauges.addTemperature(deltaTemp);
+  /**
+   * 水をかける。かかったストーンは濡れて黒くなり、一定時間 蒸気を上げる。
+   * 温度はここでは上げない。濡れている間に毎フレーム上がる（updateWetness）。
+   */
+  private pourWater(x: number, z: number): void {
+    const l = BALANCE.loyly;
+    const wet = this.physics.wetStonesNear(x, z, l.radius, l.wetDurationSec);
+
+    this.loyly.consume();
+    this.splash.play(x, BALANCE.field.lowerTableY + 0.01, z);
     this.steam.burst(x, z);
     this.hud.playFlash('loyly');
-    this.hud.toast(`ロウリュ +${Math.round(deltaTemp)}℃`);
-    this.cameraRig.shake(0.035);
+    this.hud.toast(wet > 0 ? `ロウリュ！ ストーン ${wet} 個` : 'ロウリュ（空振り）');
+    this.cameraRig.shake(0.03);
     this.audio.playLoyly();
-    this.bus.emit('LOYLY_FIRED', { x, z, stones, deltaTemp });
+    this.bus.emit('LOYLY_FIRED', { x, z, stones: wet, deltaTemp: 0 });
     this.endAiming();
-  }
-
-  private beginAimingInternal(): void {
-    const from = this.machine.state;
-    if (from !== 'PLAYING' && from !== 'FEVER') {
-      // 入水演出中や照準中にもロウリュはペイアウトしうる。物理は状態に関わらず
-      // 進んでいるため。ここで捨てると取ったのに何も起きないので、持ち越す。
-      this.pendingLoyly += 1;
-      return;
-    }
-    this.aimReturnState = from;
-    this.aimTimer = 0;
-    if (this.machine.transition('AIMING')) {
-      this.hud.setAiming(true, 1);
-    }
-  }
-
-  /** 持ち越したロウリュを、照準に入れる状態に戻ったところで消化する */
-  private consumePendingLoyly(): void {
-    if (this.pendingLoyly <= 0) return;
-    const state = this.machine.state;
-    if (state !== 'PLAYING' && state !== 'FEVER') return;
-    this.pendingLoyly -= 1;
-    this.beginAimingInternal();
   }
 
   private endAiming(): void {
@@ -265,10 +285,6 @@ export class Game implements GameContext {
   }
 
   // ================================================================ GameContext
-
-  beginAiming(): void {
-    this.beginAimingInternal();
-  }
 
   healStamina(amount: number): void {
     this.gauges.addStamina(amount);
@@ -303,8 +319,8 @@ export class Game implements GameContext {
         fever: this.fever.isFever,
       });
       this.updateItems(dt);
-      this.updateAiming(dt);
-      this.consumePendingLoyly();
+      this.updateLoyly(dt);
+      this.updateWetness(dt);
       this.checkAutoColdBath();
     }
 
@@ -399,13 +415,25 @@ export class Game implements GameContext {
     this.itemMeshes.delete(id);
   }
 
-  private updateAiming(dt: number): void {
-    if (this.machine.state !== 'AIMING') return;
-    this.aimTimer += dt;
-    const limit = BALANCE.items.loyly.aimTimeoutSec;
-    this.hud.setAiming(true, 1 - this.aimTimer / limit);
-    // 5秒以内にタップしない場合は中央に自動着弾（仕様 8.1）
-    if (this.aimTimer >= limit) this.fireLoyly(0, 0);
+  private updateLoyly(dt: number): void {
+    const result = this.loyly.update(dt);
+    if (this.machine.state === 'AIMING') {
+      this.hud.setAiming(true, this.loyly.modeRatio);
+    }
+    // モードのまま放置したら解除する。クールタイムは消費しない
+    if (result === 'timeout') this.endAiming();
+  }
+
+  /**
+   * 濡れているストーンを進める。
+   * 濡れている間だけ室温が上がる（かけた瞬間に跳ねるのではない）ので、
+   * 「何個濡らせたか」がそのまま効きの差になる。
+   */
+  private updateWetness(dt: number): void {
+    const wetCount = this.physics.tickWetness(dt);
+    if (wetCount === 0) return;
+    const l = BALANCE.loyly;
+    this.gauges.addTemperature(Math.min(wetCount, l.maxStones) * l.tempPerStonePerSec * dt);
   }
 
   // ================================================================ 水風呂・フィーバー
@@ -570,11 +598,18 @@ export class Game implements GameContext {
     );
   }
 
-  /** 物理の姿勢を InstancedMesh に流し込む。個別 Mesh では 120 個で破綻する。 */
+  /**
+   * 物理の姿勢を InstancedMesh に流し込む。個別 Mesh では 120 個で破綻する。
+   * あわせて、濡れているストーンだけインスタンス色を暗くし、
+   * 蒸気の発生源リストを組み直す。
+   */
   private syncStones(): void {
     const mesh = this.refs.stoneMesh;
     let index = 0;
     const max = mesh.instanceMatrix.count;
+    this.wetSources.length = 0;
+    const dark = 1 - BALANCE.loyly.wetDarkness;
+
     for (const tracked of this.physics.all()) {
       if (tracked.kind !== 'stone' || index >= max) continue;
       const t = tracked.body.translation();
@@ -583,10 +618,25 @@ export class Game implements GameContext {
       this.tmpQuat.set(r.x, r.y, r.z, r.w);
       this.tmpMatrix.compose(this.tmpPos, this.tmpQuat, this.tmpScale);
       mesh.setMatrixAt(index, this.tmpMatrix);
+
+      if (tracked.wetRemaining > 0) {
+        // 乾くにつれて元の色へ戻す
+        const wetness = Math.min(1, tracked.wetRemaining / BALANCE.loyly.wetDurationSec);
+        const shade = 1 - (1 - dark) * wetness;
+        this.tmpColor.setRGB(shade, shade, shade);
+        this.wetSources.push({ x: t.x, y: t.y, z: t.z });
+      } else {
+        this.tmpColor.setRGB(1, 1, 1);
+      }
+      // 乾いているインスタンスにも必ず白を入れること。
+      // instanceColor は 0 初期化なので、書かないと真っ黒なストーンが出る。
+      mesh.setColorAt(index, this.tmpColor);
+
       index += 1;
     }
     mesh.count = index;
     mesh.instanceMatrix.needsUpdate = true;
+    if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
   }
 
   private syncItems(): void {
@@ -607,7 +657,8 @@ export class Game implements GameContext {
 
   private updateVisuals(frameDt: number): void {
     const temp = this.gauges.temperature;
-    this.steam.update(frameDt, temp, this.quality.scale);
+    this.steam.update(frameDt, temp, this.quality.scale, this.wetSources);
+    this.splash.update(frameDt);
 
     // ストーンの自発光を温度で強める（仕様 10章 3）。
     // 強くしすぎると盤面全体が橙に飽和して、石も木目も読めなくなる。
@@ -643,6 +694,9 @@ export class Game implements GameContext {
       pendingDuration: pending.duration,
       canThrow: this.payout.canThrow(this.fever.isFever) && !this.machine.inputBlocked,
       throwReady: this.spawner.isReady(this.loop.now, this.fever.isFever),
+      loylyActive: this.machine.state === 'AIMING',
+      loylyCooldownRatio: this.loyly.cooldownRatio,
+      loylyCooldownSec: this.loyly.cooldownRemainingSec,
     });
   }
 
@@ -691,13 +745,14 @@ export class Game implements GameContext {
     this.spawner.reset();
     this.items.reset();
     this.fever.reset();
+    this.loyly.reset();
+    this.wetSources.length = 0;
     this.hud.reset();
     this.hud.setAiming(false);
     this.audio.setFeverMusic(false);
     this.setOutdoorMood(false);
     this.cameraRig.setShot('play');
     this.gameOverDelay = 0;
-    this.pendingLoyly = 0;
     this.waterAmount = 0;
   }
 
@@ -754,8 +809,26 @@ export class Game implements GameContext {
       advance: (seconds: number) => {
         harness.step(Math.round(seconds / BALANCE.physics.fixedTimeStep));
       },
-      /** 投入レーンの normalizedX を指定して投げる */
+      /** 投入レーンの normalizedX（画面座標基準、-1=左）を指定して投げる */
       throwAt: (normalizedX: number) => this.tryThrow(normalizedX),
+      /** ロウリュモードに入り、盤面の (x, z) に水をかける */
+      loylyAt: (x: number, z: number) => {
+        this.toggleLoylyMode();
+        this.pourWater(x, z);
+      },
+      /** ストーンの world X 分布。左右反転の検証用 */
+      stoneXs: () => {
+        const xs: number[] = [];
+        for (const t of this.physics.all()) {
+          if (t.kind === 'stone') xs.push(Number(t.body.translation().x.toFixed(3)));
+        }
+        return xs;
+      },
+      wetCount: () => {
+        let n = 0;
+        for (const t of this.physics.all()) if (t.wetRemaining > 0) n += 1;
+        return n;
+      },
       stats: () => ({
         state: this.machine.state,
         score: this.payout.score,

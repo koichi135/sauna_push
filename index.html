@@ -31,19 +31,19 @@
             <div id="fever-badge" class="fever-badge" hidden>×1.0</div>
           </div>
 
-          <div class="temp-block">
-            <div class="temp-header">
-              <span class="temp-icon">🔥</span>
-              <span class="temp-label">室温</span>
-              <span id="temp-band" class="temp-band">適温</span>
-              <span id="temp-value" class="temp-value">55</span>
-            </div>
-            <!-- 帯は常時色で表示する。数値だけでは判断できないため（仕様 6.1） -->
-            <div class="bar temp-bar">
-              <div id="temp-bands" class="temp-bands"></div>
-              <div id="temp-marker" class="temp-marker"></div>
-            </div>
+        </div>
+
+        <!-- 温度計: 画面右side の縦ゲージ。帯は常時色で表示する（仕様 6.1） -->
+        <div class="thermometer">
+          <div class="thermo-readout">
+            <span id="temp-value" class="temp-value">55</span>
+            <span id="temp-band" class="temp-band">適温</span>
           </div>
+          <div class="thermo-tube">
+            <div id="temp-bands" class="temp-bands"></div>
+            <div id="temp-marker" class="temp-marker"></div>
+          </div>
+          <div class="thermo-bulb">🔥</div>
         </div>
 
         <div class="hud-bottom">
@@ -64,10 +64,18 @@
             <div class="stone-count"><span class="stone-icon">🪨</span>×<span id="stone-count">30</span></div>
           </div>
 
-          <button id="cold-bath-btn" class="cold-bath-btn" type="button" hidden>
-            <span class="cold-bath-label">水風呂へ</span>
-            <span id="cold-bath-hint" class="cold-bath-hint">×1.0 / 8.0秒</span>
-          </button>
+          <!-- 水風呂ボタンと、その右下に添えるロウリュボタン -->
+          <div class="action-row">
+            <button id="cold-bath-btn" class="cold-bath-btn" type="button" hidden>
+              <span class="cold-bath-label">水風呂へ</span>
+              <span id="cold-bath-hint" class="cold-bath-hint">×1.0 / 8.0秒</span>
+            </button>
+            <button id="loyly-btn" class="loyly-btn" type="button">
+              <span class="loyly-icon">💧</span>
+              <span class="loyly-label">ロウリュ</span>
+              <span id="loyly-cooldown" class="loyly-cooldown"></span>
+            </button>
+          </div>
 
           <!-- ストーン投入レーン。タップした X 位置から投入される（仕様 5章） -->
           <div id="throw-lane" class="throw-lane">
@@ -76,10 +84,10 @@
           </div>
         </div>
 
-        <!-- ロウリュ照準（仕様 8.1） -->
+        <!-- ロウリュモード: 盤面をタップして水をかける -->
         <div id="aim-overlay" class="aim-overlay" hidden>
-          <div class="aim-title">ロウリュ！</div>
-          <div class="aim-sub">ストーンの山をタップ</div>
+          <div class="aim-title">ロウリュ</div>
+          <div class="aim-sub">水をかける場所をタップ</div>
           <div id="aim-timer" class="aim-timer"><div id="aim-timer-fill" class="aim-timer-fill"></div></div>
         </div>
 

@@ -28,6 +28,16 @@
   -webkit-tap-highlight-color: transparent;
 }
 
+/*
+ * hidden 属性を必ず効かせる。
+ * UA スタイルの [hidden] { display: none } は作者スタイルの display に負けるため、
+ * .hud / .fever-badge / .cold-bath-btn / .aim-overlay のように display を持つ要素は
+ * hidden にしても表示され続けてしまう。ここで一括して押さえる。
+ */
+[hidden] {
+  display: none !important;
+}
+
 html,
 body {
   margin: 0;
@@ -180,35 +190,60 @@ body {
   box-shadow: 0 0 14px rgba(255, 170, 80, 0.7);
 }
 
-.temp-block {
-  flex: 1 1 auto;
-  min-width: 0;
+/* ---------------------------------------------------------- 温度計（右側の縦ゲージ） */
+
+/*
+ * 上部 HUD と下部 HUD の隙間にぴったり収める。
+ * 画面中央基準にすると、下部のゲージ群や投入レーンに管が潜り込んで読めなくなる。
+ */
+.thermometer {
+  position: absolute;
+  right: calc(var(--safe-right) + 10px);
+  top: calc(var(--safe-top) + 78px);
+  bottom: calc(var(--safe-bottom) + 202px);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  pointer-events: none;
   text-shadow: 0 2px 6px rgba(0, 0, 0, 0.9);
 }
 
-.temp-header {
+.thermo-readout {
   display: flex;
-  align-items: baseline;
-  gap: 6px;
-  font-size: 11px;
-  color: var(--ink-dim);
-}
-
-.temp-label {
-  letter-spacing: 0.08em;
+  flex-direction: column;
+  align-items: center;
+  line-height: 1.15;
 }
 
 .temp-band {
-  margin-left: auto;
   font-weight: 700;
-  font-size: 12px;
+  font-size: 10px;
 }
 
 .temp-value {
   font-weight: 800;
-  font-size: 15px;
+  font-size: 17px;
   color: var(--ink);
   font-variant-numeric: tabular-nums;
+}
+
+/* 管。上が高温、下が低温。空きスペースぶんだけ伸ばす */
+.thermo-tube {
+  position: relative;
+  width: 16px;
+  flex: 1 1 auto;
+  min-height: 90px;
+  border-radius: 8px;
+  overflow: hidden;
+  background: rgba(0, 0, 0, 0.55);
+  box-shadow: inset 0 0 4px rgba(0, 0, 0, 0.9), 0 0 0 1px rgba(255, 210, 170, 0.25);
+}
+
+.thermo-bulb {
+  font-size: 15px;
+  line-height: 1;
+  filter: drop-shadow(0 0 6px rgba(255, 140, 60, 0.8));
 }
 
 .temp-value::after {
@@ -227,37 +262,34 @@ body {
   box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.8);
 }
 
-/* 温度バー: 帯を常時色分け表示する（仕様 6.1 / 9章） */
-.temp-bar {
-  height: 14px;
-  margin-top: 4px;
-}
-
+/* 帯は常時色分け表示する（仕様 6.1 / 9章）。上が高温、下が低温 */
 .temp-bands {
   position: absolute;
   inset: 0;
   display: flex;
+  flex-direction: column;
 }
 
 .temp-bands .band {
-  height: 100%;
-  opacity: 0.5;
+  width: 100%;
+  opacity: 0.45;
 }
 
 .temp-bands .band.active {
   opacity: 1;
 }
 
+/* 現在温度を指す横線 */
 .temp-marker {
   position: absolute;
-  top: -2px;
-  bottom: -2px;
-  width: 3px;
-  margin-left: -1.5px;
+  left: -3px;
+  right: -3px;
+  height: 3px;
+  margin-bottom: -1.5px;
   border-radius: 2px;
   background: #fff;
   box-shadow: 0 0 8px rgba(255, 255, 255, 0.95), 0 0 3px rgba(0, 0, 0, 0.9);
-  transition: left 0.08s linear;
+  transition: bottom 0.08s linear;
 }
 
 .hud-bottom {
@@ -355,10 +387,86 @@ body {
   margin-right: 1px;
 }
 
-/* 水風呂ボタン: 点灯時のみ表示（仕様 7.1） */
+/* 水風呂ボタンと、その右下に添えるロウリュボタン */
+.action-row {
+  position: relative;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  min-height: 56px;
+  margin-top: 4px;
+}
+
+/* ロウリュ: 水風呂ボタンの右下。常設だがクールタイムがある */
+.loyly-btn {
+  pointer-events: auto;
+  position: absolute;
+  right: 0;
+  top: 20px;
+  width: 68px;
+  height: 68px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: linear-gradient(150deg, #9fe4ff, #4aa8e0);
+  color: #06283d;
+  font-family: inherit;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+  box-shadow: 0 0 16px rgba(110, 200, 255, 0.55), 0 4px 10px rgba(0, 0, 0, 0.5);
+  overflow: hidden;
+}
+
+.loyly-icon {
+  font-size: 19px;
+  line-height: 1;
+}
+
+.loyly-label {
+  font-size: 10px;
+  font-weight: 800;
+}
+
+/* クールタイムを下から埋まる影で表す */
+.loyly-cooldown {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 0%;
+  background: rgba(6, 20, 34, 0.72);
+  pointer-events: none;
+}
+
+.loyly-btn.cooling {
+  filter: grayscale(0.65) brightness(0.75);
+  box-shadow: none;
+}
+
+.loyly-btn.active {
+  background: linear-gradient(150deg, #ffffff, #8fd8ff);
+  animation: loyly-pulse 0.7s ease-in-out infinite;
+}
+
+@keyframes loyly-pulse {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.08);
+  }
+}
+
+.loyly-btn:active {
+  transform: scale(0.94);
+}
+
 .cold-bath-btn {
   pointer-events: auto;
-  margin: 4px auto 0;
   padding: 10px 26px;
   border: none;
   border-radius: 999px;

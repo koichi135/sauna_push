@@ -20,6 +20,8 @@ export interface TrackedBody {
   readonly itemId?: string;
   /** 衝突音の判定に使う直前フレームの速度 */
   prevSpeed: number;
+  /** ロウリュで濡れている残り秒数。0 なら乾いている */
+  wetRemaining: number;
 }
 
 export type SensorKind = 'payout' | 'lost';
@@ -285,6 +287,7 @@ export class PhysicsWorld {
       body,
       collider,
       prevSpeed: 0,
+      wetRemaining: 0,
       ...(itemId !== undefined ? { itemId } : {}),
     };
     this.bodies.set(tracked.id, tracked);
@@ -416,5 +419,35 @@ export class PhysicsWorld {
       if (dx * dx + dz * dz <= r2) n += 1;
     }
     return n;
+  }
+
+  /**
+   * 指定点の半径内のストーンを濡らす（ロウリュ）。濡らした数を返す。
+   * 既に濡れているものは残り時間を上書きして延長する。
+   */
+  wetStonesNear(x: number, z: number, radius: number, durationSec: number): number {
+    const r2 = radius * radius;
+    let n = 0;
+    for (const t of this.bodies.values()) {
+      if (t.kind !== 'stone') continue;
+      const p = t.body.translation();
+      const dx = p.x - x;
+      const dz = p.z - z;
+      if (dx * dx + dz * dz > r2) continue;
+      t.wetRemaining = durationSec;
+      n += 1;
+    }
+    return n;
+  }
+
+  /** 濡れ時間を進める。まだ濡れているストーンの数を返す。 */
+  tickWetness(dt: number): number {
+    let wet = 0;
+    for (const t of this.bodies.values()) {
+      if (t.wetRemaining <= 0) continue;
+      t.wetRemaining = Math.max(0, t.wetRemaining - dt);
+      if (t.wetRemaining > 0) wet += 1;
+    }
+    return wet;
   }
 }
