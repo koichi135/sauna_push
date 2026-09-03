@@ -1,5 +1,6 @@
 import { BALANCE, bandForTemperature, type TempBand } from '../core/BalanceConfig';
 import type { EventBus } from '../core/EventBus';
+import type { RunModifiers } from './RunModifiers';
 
 export interface GaugeUpdateContext {
   /** 手持ちストーンが 0（STARVING）か。追加ダメージが入る */
@@ -22,11 +23,17 @@ export class Gauges {
 
   /** ととのいが MAX のまま経過した秒数。autoColdBathSec で自動入水 */
   totonoiFullSec = 0;
-  /** サウナハットの耐熱の残り秒数。0 より大きい間は温度帯ダメージを受けない */
-  heatShieldSec = 0;
   /** セット数による難度スケール。setDifficulty で更新 */
   private coolScale = 1;
   private damageScale = 1;
+  /** サウナハット・レリックのスタックによる温度帯ダメージ倍率（乗算で重なる。1 が無効） */
+  private relicDamageMult = 1;
+  /** サウナハットのスタック数（HUD 表示用） */
+  relicDamageStacks = 0;
+  /** パーク由来の倍率・加算値。Game が resetRun/perk 適用時に反映する */
+  private runDamageMult = 1;
+  private runMaxBonus = 0;
+  private runFeverRegenMult = 1;
   private band: TempBand = bandForTemperature(BALANCE.temperature.initial);
   private warningActive = false;
   /** 直近 payoutWindowSec 以内のペイアウト時刻（ループ内経過秒） */
@@ -44,6 +51,11 @@ export class Gauges {
 
   get isDead(): boolean {
     return this.stamina <= 0;
+  }
+
+  /** 最大体力。パーク「頑丈な体」の加算ぶんを含む */
+  get maxStamina(): number {
+    return BALANCE.stamina.max + this.runMaxBonus;
   }
 
   /** ペイアウト1個ぶんの温度上昇とととのいボーナスを記録する（仕様 6.1 / 6.2） */
@@ -67,23 +79,31 @@ export class Gauges {
 
   /** オロポ（仕様 8.2） */
   addStamina(delta: number): void {
-    this.stamina = clamp(this.stamina + delta, 0, BALANCE.stamina.max);
+    this.stamina = clamp(this.stamina + delta, 0, this.maxStamina);
   }
 
-  /** 砂時計（フィーバー外） */
-  addTotonoi(delta: number): void {
-    this.totonoi = clamp(this.totonoi + delta, 0, BALANCE.totonoi.max);
+  /**
+   * サウナハットの永続レリック効果。拾うたびにスタックし、温度帯ダメージを
+   * 乗算で継続的に軽減する（旧仕様の一時無効化から変更。README 参照）。
+   */
+  addRelicDamageResist(multPerStack: number): void {
+    this.relicDamageMult *= multPerStack;
+    this.relicDamageStacks += 1;
   }
 
-  /** サウナハット。既に耐熱中なら残り時間を上書き延長する */
-  addHeatShield(seconds: number): void {
-    const wasActive = this.heatShieldSec > 0;
-    this.heatShieldSec = Math.max(this.heatShieldSec, seconds);
-    if (!wasActive) this.bus.emit('HEAT_SHIELD', { active: true, seconds });
-  }
-
-  get hasHeatShield(): boolean {
-    return this.heatShieldSec > 0;
+  /**
+   * パーク選択で決まる倍率・加算をまとめて反映する。ラン中に選ぶたびに呼ばれる。
+   * ここで受け取った値は毎ステップ再計算せず保持するだけなので、
+   * BALANCE と違って「常に読み直す」制約の対象外（更新頻度が低いパークの都合上のキャッシュ）。
+   */
+  setRunModifiers(mods: RunModifiers): void {
+    const prevMaxBonus = this.runMaxBonus;
+    this.runDamageMult = mods.staminaDamageMult;
+    this.runMaxBonus = mods.staminaMaxBonus;
+    this.runFeverRegenMult = mods.feverRegenMult;
+    // 最大体力が増えたぶんはそのまま即座に回復させる（パーク「頑丈な体」）
+    const grew = this.runMaxBonus - prevMaxBonus;
+    if (grew > 0) this.stamina = clamp(this.stamina + grew, 0, this.maxStamina);
   }
 
   /**
@@ -159,29 +179,27 @@ export class Gauges {
   }
 
   private updateStamina(dt: number, ctx: GaugeUpdateContext): void {
-    if (this.heatShieldSec > 0) {
-      this.heatShieldSec = Math.max(0, this.heatShieldSec - dt);
-      if (this.heatShieldSec <= 0) this.bus.emit('HEAT_SHIELD', { active: false, seconds: 0 });
-    }
-
     if (ctx.fever) {
       // 外気浴で回復する。熱い帯で粘って入水するほど外気浴が長く、回復も多い
       this.stamina = clamp(
-        this.stamina + BALANCE.fever.staminaRegenPerSec * dt,
+        this.stamina + BALANCE.fever.staminaRegenPerSec * this.runFeverRegenMult * dt,
         0,
-        BALANCE.stamina.max,
+        this.maxStamina,
       );
     } else {
       // 温度帯のダメージと STARVING は加算される（仕様 6.3）。
-      // ダメージ（負値）だけ難度レベルでスケールし、適温の回復は据え置き。
-      // サウナハット中はダメージ無効。STARVING は常に効く。
+      // ダメージ（負値）だけ難度レベル・サウナハットのレリック・パークでスケールし、
+      // 適温の回復は据え置き。STARVING は常に効く。
       const bandPerSec = this.band.staminaPerSec;
-      let perSec = bandPerSec < 0 ? (this.heatShieldSec > 0 ? 0 : bandPerSec * this.damageScale) : bandPerSec;
+      let perSec =
+        bandPerSec < 0
+          ? bandPerSec * this.damageScale * this.relicDamageMult * this.runDamageMult
+          : bandPerSec;
       if (ctx.starving) perSec += BALANCE.stamina.starvingPerSec;
-      this.stamina = clamp(this.stamina + perSec * dt, 0, BALANCE.stamina.max);
+      this.stamina = clamp(this.stamina + perSec * dt, 0, this.maxStamina);
     }
 
-    const warn = this.stamina <= BALANCE.stamina.max * BALANCE.stamina.warningRatio;
+    const warn = this.stamina <= this.maxStamina * BALANCE.stamina.warningRatio;
     if (warn !== this.warningActive) {
       this.warningActive = warn;
       this.bus.emit('STAMINA_WARNING', { active: warn });
@@ -191,11 +209,15 @@ export class Gauges {
   reset(): void {
     this.temperature = BALANCE.temperature.initial;
     this.totonoi = BALANCE.totonoi.initial;
-    this.stamina = BALANCE.stamina.initial;
-    this.totonoiFullSec = 0;
-    this.heatShieldSec = 0;
     this.coolScale = 1;
     this.damageScale = 1;
+    this.relicDamageMult = 1;
+    this.relicDamageStacks = 0;
+    this.runDamageMult = 1;
+    this.runMaxBonus = 0;
+    this.runFeverRegenMult = 1;
+    this.stamina = BALANCE.stamina.max;
+    this.totonoiFullSec = 0;
     this.band = bandForTemperature(this.temperature);
     this.warningActive = false;
     this.recentPayouts = [];

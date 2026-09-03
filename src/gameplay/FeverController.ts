@@ -32,6 +32,11 @@ export class FeverController {
   private params: FeverParams = { multiplier: 1, duration: 0 };
   /** 自動移行（ボーナスなし）で入水したか */
   private auto = false;
+  /**
+   * 砂時計の永続レリック効果によるフィーバー継続時間の加算（秒）。
+   * 拾うたびに増え、以後ずっと手動入水の外気浴が長くなる。自動入水には効かない。
+   */
+  relicDurationBonusSec = 0;
 
   get currentPhase(): FeverPhase {
     return this.phase;
@@ -73,22 +78,22 @@ export class FeverController {
    * 入水する。
    * @param temperature 入水直前の温度。これが倍率になる
    * @param auto MAX放置による自動移行なら true（ボーナスなし）
+   * @param perkDurationBonusSec パーク「長湯」による継続時間の加算（秒）。auto では効かない
    */
-  enterColdBath(temperature: number, auto: boolean): FeverParams {
+  enterColdBath(temperature: number, auto: boolean, perkDurationBonusSec = 0): FeverParams {
     this.phase = 'coldBath';
     this.timer = 0;
     this.auto = auto;
-    this.params = auto
-      ? { multiplier: BALANCE.fever.autoMultiplier, duration: BALANCE.fever.autoDurationSec }
-      : feverParamsFor(temperature);
+    if (auto) {
+      this.params = { multiplier: BALANCE.fever.autoMultiplier, duration: BALANCE.fever.autoDurationSec };
+    } else {
+      const base = feverParamsFor(temperature);
+      this.params = {
+        multiplier: base.multiplier,
+        duration: base.duration + perkDurationBonusSec + this.relicDurationBonusSec,
+      };
+    }
     return this.params;
-  }
-
-  /** 砂時計。フィーバー中のみ継続時間を延ばす。延ばせたら true */
-  extend(seconds: number): boolean {
-    if (this.phase !== 'fever') return false;
-    this.params = { ...this.params, duration: this.params.duration + seconds };
-    return true;
   }
 
   /**
@@ -121,6 +126,7 @@ export class FeverController {
     this.phase = 'idle';
     this.timer = 0;
     this.auto = false;
+    this.relicDurationBonusSec = 0;
     this.params = { multiplier: 1, duration: 0 };
   }
 }

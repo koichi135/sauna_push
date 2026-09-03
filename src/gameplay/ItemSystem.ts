@@ -51,10 +51,12 @@ export const ITEM_DEFS: readonly ItemDef[] = [
     requiresAiming: false,
     onPayout(ctx) {
       ctx.pushAllStones(BALANCE.items.vihta.pushVelocity, BALANCE.items.vihta.liftVelocity);
+      // 永続レリック。拾うたびにコンボ猶予がわずかに伸びる（スタックする）
+      ctx.addPermanentComboWindow(BALANCE.items.vihta.comboWindowBonusSec);
     },
   },
   {
-    // 耐熱。灼熱帯に踏み込んで最大倍率を狙う時間を買える
+    // 永続レリック。拾うたびに温度帯ダメージを乗算で継続的に軽減する（スタックする）
     id: 'hat',
     weight: 2,
     modelKey: 'hat',
@@ -62,11 +64,11 @@ export const ITEM_DEFS: readonly ItemDef[] = [
     color: 0xd9c9a8,
     requiresAiming: false,
     onPayout(ctx) {
-      ctx.addHeatShield(BALANCE.items.hat.shieldSec);
+      ctx.addPermanentDamageResist(BALANCE.items.hat.damageMultPerStack);
     },
   },
   {
-    // フィーバー中なら延長、それ以外はととのいを即加算
+    // 永続レリック。拾うたびに以後の手動入水フィーバーの継続時間を延ばす（スタックする）
     id: 'hourglass',
     weight: 2,
     modelKey: 'hourglass',
@@ -74,10 +76,7 @@ export const ITEM_DEFS: readonly ItemDef[] = [
     color: 0xb48cff,
     requiresAiming: false,
     onPayout(ctx) {
-      ctx.extendFeverOrTotonoi(
-        BALANCE.items.hourglass.feverExtendSec,
-        BALANCE.items.hourglass.totonoiGain,
-      );
+      ctx.addPermanentFeverDuration(BALANCE.items.hourglass.feverDurationBonusSec);
     },
   },
 ];
@@ -93,11 +92,17 @@ export class ItemSystem {
   private onBoard = new Set<number>();
   private sinceLastSpawnSec = 0;
   private payoutsSinceLastSpawn = 0;
+  /** パーク「山師の目」で出現頻度を上げる倍率。Game が perk 適用時に設定する */
+  private spawnRateMult = 1;
 
   constructor(private readonly physics: PhysicsWorld) {}
 
   get onBoardCount(): number {
     return this.onBoard.size;
+  }
+
+  setSpawnRateMult(mult: number): void {
+    this.spawnRateMult = mult;
   }
 
   /** ペイアウトのたびに呼ぶ。出現条件のカウンタを進める。 */
@@ -110,7 +115,7 @@ export class ItemSystem {
    * 45秒経過、または30秒経過かつペイアウト20回で盤面奥に投下する。
    */
   update(dt: number): ItemId | null {
-    this.sinceLastSpawnSec += dt;
+    this.sinceLastSpawnSec += dt * this.spawnRateMult;
     if (this.onBoard.size >= BALANCE.items.maxOnBoard) return null;
 
     const byTime = this.sinceLastSpawnSec >= BALANCE.items.intervalSec;
@@ -142,6 +147,7 @@ export class ItemSystem {
     this.onBoard.clear();
     this.sinceLastSpawnSec = 0;
     this.payoutsSinceLastSpawn = 0;
+    this.spawnRateMult = 1;
   }
 }
 

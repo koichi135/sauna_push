@@ -243,7 +243,13 @@ export class PhysicsWorld {
    * @param big 大玉ストーン。半径・厚みを BALANCE.bigStone のスケールで拡大し、
    *            ペイアウト価値を value 個ぶんにする。質量は体積に比例して約 5 倍になる
    */
-  spawnStone(x: number, y: number, z: number, vz: number, big = false): TrackedBody {
+  /**
+   * ストーンを投入する。
+   * @param big 大玉ストーン。半径・厚みを BALANCE.bigStone のスケールで拡大し、
+   *            ペイアウト価値を value 個ぶんにする。質量は体積に比例して約 5 倍になる
+   * @param bigValueBonus 大玉の価値への加算（パーク「大玉職人」）。big=false のときは無視
+   */
+  spawnStone(x: number, y: number, z: number, vz: number, big = false, bigValueBonus = 0): TrackedBody {
     const s = BALANCE.physics.stone;
     const b = BALANCE.bigStone;
     const radius = big ? s.radius * b.radiusScale : s.radius;
@@ -265,7 +271,7 @@ export class PhysicsWorld {
       .setCollisionGroups(GROUP_STONE)
       .setActiveEvents(RAPIER.ActiveEvents.COLLISION_EVENTS);
     const col = this.world.createCollider(collider, body);
-    return this.track('stone', body, col, undefined, big);
+    return this.track('stone', body, col, undefined, big, big ? bigValueBonus : 0);
   }
 
   /**
@@ -328,6 +334,27 @@ export class PhysicsWorld {
     return n;
   }
 
+  /**
+   * 指定点の半径内のストーンだけを手前へ押し出す（ロウリュの新効果）。
+   * ヴィヒタが盤面全体に効くのに対し、こちらは狙った一点に強く効く局所版。
+   * 「詰まった山をほぐしてコンボにする」攻略ツールとして使う。
+   */
+  pushStonesNear(x: number, z: number, radius: number, velocityZ: number, liftY: number): number {
+    const r2 = radius * radius;
+    let n = 0;
+    for (const t of this.bodies.values()) {
+      if (t.kind !== 'stone') continue;
+      const p = t.body.translation();
+      const dx = p.x - x;
+      const dz = p.z - z;
+      if (dx * dx + dz * dz > r2) continue;
+      const mass = t.body.mass();
+      t.body.applyImpulse({ x: 0, y: mass * liftY, z: -mass * velocityZ }, true);
+      n += 1;
+    }
+    return n;
+  }
+
   spawnItem(itemId: string, x: number, y: number, z: number): TrackedBody {
     const i = BALANCE.physics.item;
     const desc = RAPIER.RigidBodyDesc.dynamic()
@@ -353,6 +380,7 @@ export class PhysicsWorld {
     collider: RAPIER.Collider,
     itemId?: string,
     big = false,
+    bigValueBonus = 0,
   ): TrackedBody {
     const tracked: TrackedBody = {
       id: this.nextId++,
@@ -362,7 +390,7 @@ export class PhysicsWorld {
       prevSpeed: 0,
       wetRemaining: 0,
       big,
-      value: big ? BALANCE.bigStone.value : 1,
+      value: big ? BALANCE.bigStone.value + bigValueBonus : 1,
       ...(itemId !== undefined ? { itemId } : {}),
     };
     this.bodies.set(tracked.id, tracked);

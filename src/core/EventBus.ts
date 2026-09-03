@@ -40,8 +40,6 @@ export interface GameEvents {
   BIG_STONE_PAID: { x: number; z: number };
   /** ととのい（セット）数が進んだ。難度スケールが更新される */
   SET_ADVANCED: { set: number };
-  /** サウナハットの耐熱が始まった／切れた */
-  HEAT_SHIELD: { active: boolean; seconds: number };
   /** 体力が警告域に入った／出た */
   STAMINA_WARNING: { active: boolean };
   /** ゲームオーバー */

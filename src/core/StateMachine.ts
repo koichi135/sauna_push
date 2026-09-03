@@ -1,11 +1,14 @@
 /**
- * 仕様 11章の状態機械。
+ * 状態機械（仕様 11章 + ブラッシュアップで PERK_DRAFT を追加）。
  *
  *   BOOT → TITLE → TUTORIAL(初回のみ) → PLAYING
  *   PLAYING ⇄ AIMING(ロウリュ照準)
- *   PLAYING → COLD_BATH → FEVER → PLAYING
+ *   PLAYING → COLD_BATH → PERK_DRAFT(手動入水のみ) → FEVER → PLAYING
  *   PLAYING → GAME_OVER → RESULT → TITLE
  *   任意 → PAUSED (visibilitychange)
+ *
+ * PERK_DRAFT はセットのたびにパークを 3 択で選ぶ画面（FB「考える要素が欲しい」対応）。
+ * 自動入水（MAX 放置）はボーナス無しなのでここを経由せず COLD_BATH → FEVER に直行する。
  */
 export type GameState =
   | 'BOOT'
@@ -14,6 +17,7 @@ export type GameState =
   | 'PLAYING'
   | 'AIMING'
   | 'COLD_BATH'
+  | 'PERK_DRAFT'
   | 'FEVER'
   | 'GAME_OVER'
   | 'RESULT'
@@ -27,7 +31,8 @@ const TRANSITIONS: Record<GameState, readonly GameState[]> = {
   // フィーバー中にロウリュを取ることがあるため、AIMING は双方向に繋ぐ。
   // どちらへ戻すかは Game が照準開始時の状態を覚えている。
   AIMING: ['PLAYING', 'FEVER', 'GAME_OVER'],
-  COLD_BATH: ['FEVER'],
+  COLD_BATH: ['PERK_DRAFT', 'FEVER'],
+  PERK_DRAFT: ['FEVER'],
   FEVER: ['PLAYING', 'AIMING', 'GAME_OVER'],
   GAME_OVER: ['RESULT'],
   RESULT: ['TITLE'],
@@ -36,7 +41,13 @@ const TRANSITIONS: Record<GameState, readonly GameState[]> = {
 };
 
 /** 物理は進めるが入力を遮断する状態（仕様 11章） */
-const INPUT_BLOCKED: ReadonlySet<GameState> = new Set<GameState>(['COLD_BATH', 'GAME_OVER', 'PAUSED', 'RESULT']);
+const INPUT_BLOCKED: ReadonlySet<GameState> = new Set<GameState>([
+  'COLD_BATH',
+  'PERK_DRAFT',
+  'GAME_OVER',
+  'PAUSED',
+  'RESULT',
+]);
 
 /** ゲームプレイのゲージが進行する状態 */
 const GAUGES_RUNNING: ReadonlySet<GameState> = new Set<GameState>(['PLAYING', 'AIMING', 'FEVER']);
@@ -88,7 +99,13 @@ export class StateMachine {
   /** ブラウザの visibilitychange から呼ばれる。PAUSED 中や TITLE 系では何もしない。 */
   pause(): boolean {
     if (this.current === 'PAUSED') return false;
-    if (!GAUGES_RUNNING.has(this.current) && this.current !== 'COLD_BATH') return false;
+    if (
+      !GAUGES_RUNNING.has(this.current) &&
+      this.current !== 'COLD_BATH' &&
+      this.current !== 'PERK_DRAFT'
+    ) {
+      return false;
+    }
     this.pausedFrom = this.current;
     this.set('PAUSED');
     return true;
