@@ -26,12 +26,28 @@
       <div id="hud" class="hud" hidden>
         <div class="hud-top">
           <div class="score-block">
-            <div class="score-label">SCORE</div>
+            <div class="score-label">SCORE <span id="set-badge" class="set-badge">SET 1</span></div>
             <div id="score-value" class="score-value">0</div>
-            <div id="fever-badge" class="fever-badge" hidden>×1.0</div>
+            <div id="fever-badge" class="fever-badge" hidden>
+              <span id="fever-mult" class="fever-mult">×1.0</span>
+              <span id="fever-time" class="fever-time">8.0s</span>
+              <div class="fever-bar"><div id="fever-fill" class="fever-fill"></div></div>
+            </div>
+            <div id="status-chips" class="status-chips" hidden>
+              <span id="chip-shield" class="chip" hidden>🎩 耐熱</span>
+            </div>
           </div>
-
         </div>
+
+        <!-- コンボ（連続ペイアウト）。落下が続いている間だけ出る -->
+        <div id="combo" class="combo" hidden>
+          <div id="combo-count" class="combo-count">2</div>
+          <div class="combo-label">COMBO <span id="combo-mult" class="combo-mult">×1.1</span></div>
+          <div class="combo-window"><div id="combo-window-fill" class="combo-window-fill"></div></div>
+        </div>
+
+        <!-- 浮かび上がるスコア表示（ペイアウト口の位置に出す） -->
+        <div id="popup-layer" class="popup-layer" aria-hidden="true"></div>
 
         <!-- 温度計: 画面右side の縦ゲージ。帯は常時色で表示する（仕様 6.1） -->
         <div class="thermometer">
@@ -52,6 +68,7 @@
             <span class="gauge-name">ととのい</span>
             <div class="bar gauge-bar totonoi">
               <div id="totonoi-fill" class="fill"></div>
+              <div id="totonoi-auto" class="totonoi-auto" hidden></div>
             </div>
           </div>
 
@@ -80,7 +97,8 @@
           <!-- ストーン投入レーン。タップした X 位置から投入される（仕様 5章） -->
           <div id="throw-lane" class="throw-lane">
             <div id="throw-lane-marker" class="throw-lane-marker"></div>
-            <span class="throw-lane-text">タップしてストーン投入</span>
+            <span id="throw-lane-text" class="throw-lane-text">タップしてストーン投入</span>
+            <span id="big-stone-badge" class="big-stone-badge" hidden>大玉 ×1</span>
           </div>
         </div>
 
@@ -116,12 +134,14 @@
         <section id="screen-tutorial" class="screen" hidden>
           <h2 class="screen-title">あそびかた</h2>
           <ol class="tutorial-list">
-            <li><b>投入</b> — 画面下のレーンをタップした位置からストーンが落ちます。</li>
+            <li><b>投入</b> — 画面下のレーンをタップした位置からストーンが落ちます。山を押して手前に落とそう。</li>
             <li><b>ペイアウト</b> — 手前に落ちたストーンは +2 個。同時にストーブに入り<b>室温が上がります</b>。</li>
-            <li><b>適温を保つ</b> — 60〜84℃が基本。<b>85〜94℃が最高効率</b>ですが体力が減ります。95℃以上は効率が落ちます。</li>
-            <li><b>ととのい</b> — MAXで「水風呂へ」が点灯。<b>入水した瞬間の温度がそのまま倍率</b>になります。</li>
-            <li><b>外気浴</b> — 倍率つきのフィーバー。投入し放題・体力ダメージなし。</li>
-            <li><b>体力0でゲームオーバー</b>。ストーン切れでも体力が減り続けます。</li>
+            <li><b>コンボ</b> — 続けて落ちるとスコア倍率アップ。<b>5 連鎖ごとにストーン、10 連鎖で大玉</b>がもらえます。</li>
+            <li><b>適温を保つ</b> — 60〜84℃が基本。<b>85〜94℃が最高効率</b>ですが体力が減ります。冷えすぎても減ります。</li>
+            <li><b>ととのい</b> — MAXで「水風呂へ」が点灯。<b>入水した瞬間の温度がそのまま倍率</b>（最大×3）。放置すると弱い外気浴になります。</li>
+            <li><b>外気浴</b> — 倍率つきのフィーバー。投入し放題・体力ダメージなし。セットが進むほど熱くなります。</li>
+            <li><b>アイテム</b> — 🥫オロポ=回復 / 🌿ヴィヒタ=山崩し / 🎩ハット=耐熱 / ⏳砂時計=延長。手前に落として発動。</li>
+            <li><b>体力0でゲームオーバー</b>。</li>
           </ol>
           <button id="btn-tutorial-close" class="btn btn-primary" type="button">はじめる</button>
         </section>
@@ -132,8 +152,10 @@
           <div id="result-newrecord" class="new-record" hidden>NEW RECORD!</div>
           <div class="result-score" id="result-score">0</div>
           <dl class="result-stats">
-            <div><dt>ととのい回数</dt><dd id="result-totonoi">0</dd></div>
+            <div><dt>ととのい</dt><dd id="result-totonoi">0</dd></div>
             <div><dt>ペイアウト</dt><dd id="result-payout">0</dd></div>
+            <div><dt>最大コンボ</dt><dd id="result-combo">0</dd></div>
+            <div><dt>最高倍率</dt><dd id="result-mult">×1.0</dd></div>
             <div><dt>ハイスコア</dt><dd id="result-highscore">0</dd></div>
           </dl>
           <button id="btn-retry" class="btn btn-primary" type="button">もう一度ととのう</button>

@@ -180,6 +180,59 @@ export class AudioEngine {
     this.playTone(420, 110, 1.6, 'sawtooth', 0.16);
   }
 
+  /** 大玉ストーンの獲得（上昇するファンファーレ）とペイアウト（重い着地音） */
+  playBigStoneEarned(): void {
+    this.playTone(523, 784, 0.18, 'triangle', 0.14);
+    window.setTimeout(() => this.playTone(784, 1046, 0.28, 'triangle', 0.14), 120);
+  }
+
+  playBigStonePaid(): void {
+    this.playTone(160, 55, 0.35, 'sine', 0.4);
+    this.playTone(1100, 1500, 0.2, 'triangle', 0.12);
+  }
+
+  /** コンボの節目（5 連鎖ごと）。段が上がるほど高く鳴る */
+  playComboMilestone(step: number): void {
+    const base = 660 * Math.pow(1.06, Math.min(step, 12));
+    this.playTone(base, base * 1.5, 0.22, 'square', 0.08);
+  }
+
+  /** ヴィヒタの「バサッ」。低めのノイズを短く */
+  playVihta(): void {
+    const ctx = this.ctx;
+    if (!ctx || !this.master || this.muted) return;
+    const now = ctx.currentTime;
+    const dur = 0.45;
+    const src = ctx.createBufferSource();
+    src.buffer = this.noiseBuffer;
+    src.loop = true;
+    const filter = ctx.createBiquadFilter();
+    filter.type = 'lowpass';
+    filter.frequency.setValueAtTime(600, now);
+    filter.frequency.exponentialRampToValueAtTime(3000, now + 0.08);
+    filter.frequency.exponentialRampToValueAtTime(300, now + dur);
+    const gain = ctx.createGain();
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.exponentialRampToValueAtTime(0.42, now + 0.05);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + dur);
+    src.connect(filter).connect(gain).connect(this.master);
+    src.start(now);
+    src.stop(now + dur);
+  }
+
+  /** サウナハット（柔らかい二音） */
+  playHat(): void {
+    this.playTone(440, 440, 0.18, 'sine', 0.14);
+    window.setTimeout(() => this.playTone(587, 587, 0.3, 'sine', 0.14), 140);
+  }
+
+  /** 砂時計（チクタク） */
+  playHourglass(): void {
+    this.playTone(1800, 1200, 0.05, 'square', 0.06);
+    window.setTimeout(() => this.playTone(1500, 1000, 0.05, 'square', 0.06), 110);
+    window.setTimeout(() => this.playTone(700, 1050, 0.3, 'triangle', 0.12), 240);
+  }
+
   /** フィーバー（外気浴）中のアンビエント。開始／停止で呼ぶ。 */
   setFeverMusic(on: boolean): void {
     const ctx = this.ctx;

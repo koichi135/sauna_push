@@ -9,7 +9,7 @@ import { buildItemMesh, buildScene, type SceneRefs } from '../view/SceneBuilder'
 import { CameraRig } from '../view/CameraRig';
 import { DistortionPass, SplashEffect, SteamSystem } from '../view/Effects';
 import { QualityScaler } from '../view/QualityScaler';
-import { HUD } from '../ui/HUD';
+import { HUD, type PopupKind } from '../ui/HUD';
 import { Overlays } from '../ui/Overlays';
 import { DebugPanel, isDebugEnabled } from '../ui/DebugPanel';
 import { Gauges } from './Gauges';
@@ -67,6 +67,19 @@ export class Game implements GameContext {
   private gameOverDelay = 0;
   /** 水風呂の歪み演出の強さ 0..1 */
   private waterAmount = 0;
+  /** このランでゲージが動いていた累計秒数。時間による難度上昇に使う */
+  private runSec = 0;
+  /** 固定ステップで発生し、次の描画で画面座標へ投影して出すスコア表示 */
+  private readonly pendingPopups: {
+    x: number;
+    y: number;
+    z: number;
+    text: string;
+    kind: PopupKind;
+    /** ペイアウト額なら数値。HUD 側で直前の表示に積み上げる */
+    amount?: number;
+  }[] = [];
+  private readonly tmpProject = new THREE.Vector3();
 
   private readonly tmpMatrix = new THREE.Matrix4();
   private readonly tmpPos = new THREE.Vector3();
@@ -106,6 +119,7 @@ export class Game implements GameContext {
     this.pusher = new Pusher(this.physics);
     this.spawner = new StoneSpawner(this.physics);
     this.items = new ItemSystem(this.physics);
+    this.prefillBoard();
 
     this.overlays = new Overlays({
       onStart: () => this.startFromTitle(),
@@ -210,12 +224,75 @@ export class Game implements GameContext {
     // 画面座標の左右と world の X は向きが逆（BalanceConfig の screenToWorldXSign 参照）。
     // ここで符号を合わせないと、タップした側と反対側にストーンが落ちる。
     const worldX = normalizedX * BALANCE.spawn.screenToWorldXSign;
-    const stone = this.spawner.tryThrow(worldX, this.loop.now, fever);
+    const stone = this.spawner.tryThrow(worldX, this.loop.now, fever, this.payout.nextThrowIsBig);
     if (!stone) return;
-    this.payout.consumeForThrow(fever);
+    const usedBig = this.payout.consumeForThrow(fever);
+    if (usedBig) {
+      this.hud.toast('大玉ストーン投入！', 'good');
+      this.cameraRig.shake(0.01);
+    }
     // レーンのフィードバックはタップした画面位置に出す（符号を戻さない）
     this.hud.flashThrowLane(normalizedX);
     this.bus.emit('STONE_THROWN', { x: stone.body.translation().x });
+  }
+
+  /**
+   * 盤面に初期山を積む（BALANCE.field.prefill）。
+   * 実機のコインプッシャー同様、最初から山がある状態で始めないと
+   * 「投げても何も落ちない」時間が長すぎて手持ちが尽きる。
+   * 静止状態で置いてから物理を回して落ち着かせる。センサーに落ちた分は数えない。
+   */
+  private prefillBoard(): void {
+    const f = BALANCE.field;
+    const pf = f.prefill;
+    const s = BALANCE.physics.stone;
+    const p = BALANCE.pusher;
+    const pitch = s.radius * 2 * 1.06;
+    const jitter = () => (Math.random() - 0.5) * 0.006;
+
+    // 下段テーブル: ペイアウト境界の少し内側から、最後退時のプッシャー前面の手前まで。
+    // 板と重なる位置に置くと弾き飛ばされるので、前面より 1 個ぶん手前で止める。
+    const pusherFrontRetracted = p.baseZ - p.depth / 2;
+    const lowerFront = f.payoutZ + s.radius + 0.012;
+    const lowerBack = pusherFrontRetracted - s.radius - 0.005;
+    const lowerStep = pf.lowerRows > 1 ? (lowerBack - lowerFront) / (pf.lowerRows - 1) : 0;
+    for (let layer = 0; layer < pf.lowerLayers; layer += 1) {
+      for (let row = 0; row < pf.lowerRows; row += 1) {
+        const z = lowerFront + lowerStep * row;
+        // 段ごとに半個ずらして噛み合わせる
+        const offset = ((layer + row) % 2) * pitch * 0.5;
+        for (let col = 0; col < pf.lowerCols; col += 1) {
+          const x = -f.halfWidth + s.radius + 0.004 + col * pitch + offset;
+          if (x > f.halfWidth - s.radius) continue;
+          const y = f.lowerTableY + s.thickness + 0.004 + layer * (s.thickness + 0.006);
+          this.physics.placeStone(x + jitter(), y, z + jitter());
+        }
+      }
+    }
+
+    // プッシャー板の上: 前面の少し内側から、シュート前縁の手前まで
+    const shelfFront = pusherFrontRetracted + s.radius + 0.01;
+    const shelfBack = f.chute.frontZ - s.radius - 0.01;
+    const shelfStep = pf.shelfRows > 1 ? (shelfBack - shelfFront) / (pf.shelfRows - 1) : 0;
+    for (let row = 0; row < pf.shelfRows; row += 1) {
+      const z = shelfFront + shelfStep * row;
+      const offset = (row % 2) * pitch * 0.5;
+      for (let col = 0; col < pf.shelfCols; col += 1) {
+        const x = -f.halfWidth + s.radius + 0.004 + col * pitch + offset;
+        if (x > f.halfWidth - s.radius) continue;
+        this.physics.placeStone(x + jitter(), f.shelfTopY + s.thickness + 0.004, z + jitter());
+      }
+    }
+
+    this.physics.settle(pf.settleSteps);
+
+    // プッシャーを空回しして定常状態にする。周期ちょうどで止めるので位相は 0 に戻る
+    const dt = BALANCE.physics.fixedTimeStep;
+    const warmupSteps = Math.round((BALANCE.pusher.period * pf.warmupCycles) / dt);
+    for (let i = 0; i < warmupSteps; i += 1) {
+      this.pusher.update(dt, false);
+      this.physics.settle(1);
+    }
   }
 
   /** ロウリュボタン。押すとモードに入り、モード中に押すと取り消す */
@@ -296,6 +373,29 @@ export class Game implements GameContext {
     this.loop.setSlowMotion(scale, durationSec);
   }
 
+  pushAllStones(velocityZ: number, liftY: number): void {
+    const n = this.physics.pushAllStones(velocityZ, liftY);
+    this.hud.toast(`ヴィヒタ！ ${n} 個を扇いだ`, 'good');
+    this.cameraRig.shake(0.02);
+    this.audio.playVihta();
+  }
+
+  addHeatShield(seconds: number): void {
+    this.gauges.addHeatShield(seconds);
+    this.hud.toast(`サウナハット 耐熱 ${seconds.toFixed(0)}秒`, 'good');
+    this.audio.playHat();
+  }
+
+  extendFeverOrTotonoi(feverSeconds: number, totonoiGain: number): void {
+    if (this.fever.extend(feverSeconds)) {
+      this.hud.toast(`砂時計 外気浴 +${feverSeconds.toFixed(0)}秒`, 'good');
+    } else {
+      this.gauges.addTotonoi(totonoiGain);
+      this.hud.toast(`砂時計 ととのい +${totonoiGain}`, 'good');
+    }
+    this.audio.playHourglass();
+  }
+
   // ================================================================ 固定ステップ
 
   private fixedUpdate(dt: number): void {
@@ -318,6 +418,9 @@ export class Game implements GameContext {
         starving: this.payout.isStarving,
         fever: this.fever.isFever,
       });
+      this.payout.update(this.loop.now);
+      this.runSec += dt;
+      this.updateDifficulty();
       this.updateItems(dt);
       this.updateLoyly(dt);
       this.updateWetness(dt);
@@ -330,13 +433,27 @@ export class Game implements GameContext {
 
   private handleSensorHits(payouts: TrackedBody[], losts: TrackedBody[]): void {
     let paidStones = 0;
+    let bigPaid = 0;
+    let sumX = 0;
     const collectedItems: ItemId[] = [];
+    // タイトル画面やゲームオーバー中も物理は動くが、そこで落ちた分はスコアにしない
+    const scoring = this.machine.gaugesRunning;
 
     for (const tracked of payouts) {
       const pos = tracked.body.translation();
       if (tracked.kind === 'stone') {
-        paidStones += 1;
-        this.bus.emit('STONE_PAID', { x: pos.x, z: pos.z, count: 1 });
+        if (scoring) {
+          paidStones += tracked.value;
+          sumX += pos.x * tracked.value;
+          if (tracked.big) {
+            bigPaid += 1;
+            this.bus.emit('BIG_STONE_PAID', { x: pos.x, z: pos.z });
+          }
+          this.bus.emit('STONE_PAID', { x: pos.x, z: pos.z, count: tracked.value });
+        }
+      } else if (!scoring) {
+        this.items.notifyRemoved(tracked);
+        this.removeItemMesh(tracked.id);
       } else if (tracked.itemId) {
         // アイテムはペイアウト口に落ちたときのみ発動（仕様 8章）
         collectedItems.push(tracked.itemId as ItemId);
@@ -359,11 +476,44 @@ export class Game implements GameContext {
     }
 
     if (paidStones > 0) {
-      this.payout.registerPayout(paidStones, this.fever.multiplier);
+      const result = this.payout.registerPayout(paidStones, this.fever.multiplier, this.loop.now);
       this.gauges.registerPayout(this.loop.now, paidStones);
       this.items.registerPayout(paidStones);
-      this.audio.playPayout(this.fever.isFever ? 1.25 : 1);
+      // 連鎖が伸びるほど音程が上がる
+      const comboPitch = 1 + Math.min(result.combo, 20) * 0.03;
+      this.audio.playPayout((this.fever.isFever ? 1.25 : 1) * comboPitch);
       this.hud.bumpScore();
+
+      const f = BALANCE.field;
+      const kind: PopupKind = bigPaid > 0 ? 'big' : result.combo >= BALANCE.combo.milestoneEvery ? 'combo' : 'normal';
+      this.pendingPopups.push({
+        x: sumX / paidStones,
+        y: f.lowerTableY,
+        z: f.payoutZ - 0.02,
+        text: `+${result.amount}`,
+        kind,
+        amount: result.amount,
+      });
+
+      if (result.bonusStones > 0) {
+        this.hud.toast(`${result.combo} 連鎖！ ストーン +${result.bonusStones}`, 'good');
+        this.audio.playComboMilestone(Math.floor(result.combo / BALANCE.combo.milestoneEvery));
+        this.pendingPopups.push({
+          x: sumX / paidStones,
+          y: f.lowerTableY + 0.04,
+          z: f.payoutZ,
+          text: `🪨 +${result.bonusStones}`,
+          kind: 'bonus',
+        });
+      }
+      if (result.earnedBigStone) {
+        this.hud.toast('大玉ストーン獲得！ 次の投入で使える', 'good');
+        this.audio.playBigStoneEarned();
+      }
+      if (bigPaid > 0) {
+        this.cameraRig.shake(0.025);
+        this.audio.playBigStonePaid();
+      }
     }
 
     // 効果の発動は盤面の後始末が終わってから。onPayout が状態遷移を起こすため。
@@ -464,7 +614,7 @@ export class Game implements GameContext {
       duration: params.duration,
       auto,
     });
-    this.hud.toast(auto ? 'のぼせる前に自動入水…' : `入水！ ×${params.multiplier.toFixed(1)}`);
+    this.hud.toast(auto ? 'のぼせる前に自動入水…' : `入水！ ×${params.multiplier.toFixed(1)}`, auto ? 'bad' : 'good');
   }
 
   private updateFever(dt: number): void {
@@ -473,13 +623,19 @@ export class Game implements GameContext {
     if (phase === 'feverStart') {
       // 入水後、温度は 5 まで低下（仕様 7.1）
       this.gauges.applyColdBath();
-      this.payout.registerTotonoi();
+      const p = this.fever.pendingParams;
+      if (this.fever.enteredAutomatically) {
+        // 放置による自動入水: ボーナスなし・セットに数えない・短い外気浴
+        this.hud.toast(`ぬるい外気浴… ${p.duration.toFixed(0)}秒（ボーナスなし）`, 'bad');
+      } else {
+        const bonus = this.payout.registerTotonoi(p.multiplier);
+        this.updateDifficulty();
+        this.hud.toast(`ととのった！ ×${p.multiplier.toFixed(1)} / ${p.duration.toFixed(1)}秒  +${bonus}`, 'good');
+      }
       this.machine.transition('FEVER');
       this.cameraRig.setShot('fever');
       this.audio.setFeverMusic(true);
       this.setOutdoorMood(true);
-      const p = this.fever.pendingParams;
-      this.hud.toast(`ととのった！ ×${p.multiplier.toFixed(1)} / ${p.duration.toFixed(1)}秒`);
       this.bus.emit('FEVER_STARTED', { multiplier: p.multiplier, duration: p.duration });
     } else if (phase === 'feverEnd') {
       this.gauges.resetTotonoi();
@@ -494,6 +650,12 @@ export class Game implements GameContext {
     // 水風呂〜フィーバー序盤の水面歪みを時間で減衰させる
     const targetWater = this.fever.isColdBath ? 1 : 0;
     this.waterAmount += (targetWater - this.waterAmount) * Math.min(1, dt * 6);
+  }
+
+  /** 難度レベル = セット数 + 経過分 × levelPerMinute（BALANCE.sets） */
+  private updateDifficulty(): void {
+    const level = this.payout.totonoiCount + (this.runSec / 60) * BALANCE.sets.levelPerMinute;
+    this.gauges.setDifficulty(level);
   }
 
   /** 外気浴の「空が抜ける」画（仕様 7.2） */
@@ -530,6 +692,8 @@ export class Game implements GameContext {
           score: this.payout.score,
           totonoiCount: this.payout.totonoiCount,
           totalPaid: this.payout.totalPaid,
+          maxCombo: this.payout.maxCombo,
+          bestMultiplier: this.payout.bestMultiplier,
           highScore: this.highScore,
           isHighScore: this.payout.score >= this.highScore && this.payout.score > 0,
         });
@@ -554,7 +718,7 @@ export class Game implements GameContext {
     this.cameraRig.shake(0.05);
     this.audio.setFeverMusic(false);
     this.audio.playGameOver();
-    this.hud.toast('のぼせました…');
+    this.hud.toast('のぼせました…', 'bad');
     this.bus.emit('GAME_OVER', {
       score: this.payout.score,
       totonoiCount: this.payout.totonoiCount,
@@ -586,6 +750,7 @@ export class Game implements GameContext {
       this.renderer.render(this.refs.scene, this.cameraRig.camera);
     }
 
+    this.flushPopups();
     this.updateHud();
     this.debugPanel?.update(
       {
@@ -596,6 +761,21 @@ export class Game implements GameContext {
       },
       performance.now(),
     );
+  }
+
+  /** 固定ステップで溜まったスコア表示を、現在のカメラで画面座標に投影して出す */
+  private flushPopups(): void {
+    if (this.pendingPopups.length === 0) return;
+    const w = window.innerWidth;
+    const h = window.innerHeight;
+    for (const popup of this.pendingPopups) {
+      this.tmpProject.set(popup.x, popup.y, popup.z).project(this.cameraRig.camera);
+      const sx = (this.tmpProject.x + 1) * 0.5 * w;
+      const sy = (1 - this.tmpProject.y) * 0.5 * h;
+      if (popup.amount !== undefined) this.hud.payoutPopup(sx, sy, popup.amount, popup.kind);
+      else this.hud.popup(sx, sy, popup.text, popup.kind);
+    }
+    this.pendingPopups.length = 0;
   }
 
   /**
@@ -609,6 +789,7 @@ export class Game implements GameContext {
     const max = mesh.instanceMatrix.count;
     this.wetSources.length = 0;
     const dark = 1 - BALANCE.loyly.wetDarkness;
+    const big = BALANCE.bigStone;
 
     for (const tracked of this.physics.all()) {
       if (tracked.kind !== 'stone' || index >= max) continue;
@@ -616,6 +797,9 @@ export class Game implements GameContext {
       const r = tracked.body.rotation();
       this.tmpPos.set(t.x, t.y, t.z);
       this.tmpQuat.set(r.x, r.y, r.z, r.w);
+      // 大玉はジオメトリ共有のままスケールで表す（円柱の軸は Y）
+      if (tracked.big) this.tmpScale.set(big.radiusScale, big.thicknessScale, big.radiusScale);
+      else this.tmpScale.set(1, 1, 1);
       this.tmpMatrix.compose(this.tmpPos, this.tmpQuat, this.tmpScale);
       mesh.setMatrixAt(index, this.tmpMatrix);
 
@@ -625,6 +809,9 @@ export class Game implements GameContext {
         const shade = 1 - (1 - dark) * wetness;
         this.tmpColor.setRGB(shade, shade, shade);
         this.wetSources.push({ x: t.x, y: t.y, z: t.z });
+      } else if (tracked.big) {
+        // 大玉は赤みを帯びた「焼けた石」。ひと目で普通の石と区別できるように
+        this.tmpColor.setRGB(1.6, 0.95, 0.7);
       } else {
         this.tmpColor.setRGB(1, 1, 1);
       }
@@ -684,14 +871,21 @@ export class Game implements GameContext {
   private updateHud(): void {
     const feverIdle = this.fever.currentPhase === 'idle';
     const pending = feverParamsFor(this.gauges.temperature);
+    const coldBathReady = feverIdle && this.gauges.isTotonoiReady && !this.machine.inputBlocked;
     this.hud.update({
       gauges: this.gauges,
       payout: this.payout,
       fever: this.fever.isFever,
       feverMultiplier: this.fever.multiplier,
-      coldBathReady: feverIdle && this.gauges.isTotonoiReady && !this.machine.inputBlocked,
+      feverRemaining: this.fever.remaining,
+      feverProgress: this.fever.progress,
+      coldBathReady,
       pendingMultiplier: pending.multiplier,
       pendingDuration: pending.duration,
+      autoBathRatio: coldBathReady
+        ? 1 - this.gauges.totonoiFullSec / BALANCE.totonoi.autoColdBathSec
+        : 0,
+      comboWindowRatio: this.payout.comboWindowRatio(this.loop.now),
       canThrow: this.payout.canThrow(this.fever.isFever) && !this.machine.inputBlocked,
       throwReady: this.spawner.isReady(this.loop.now, this.fever.isFever),
       loylyActive: this.machine.state === 'AIMING',
@@ -739,9 +933,11 @@ export class Game implements GameContext {
   private resetRun(): void {
     this.physics.clearDynamic();
     for (const id of [...this.itemMeshes.keys()]) this.removeItemMesh(id);
+    this.pendingPopups.length = 0;
     this.gauges.reset();
     this.payout.reset();
     this.pusher.reset();
+    this.prefillBoard();
     this.spawner.reset();
     this.items.reset();
     this.fever.reset();
@@ -754,6 +950,7 @@ export class Game implements GameContext {
     this.cameraRig.setShot('play');
     this.gameOverDelay = 0;
     this.waterAmount = 0;
+    this.runSec = 0;
   }
 
   /**
@@ -842,13 +1039,31 @@ export class Game implements GameContext {
         bodies: this.physics.bodyCount,
         fever: this.fever.currentPhase,
         multiplier: this.fever.multiplier,
+        combo: this.payout.combo,
+        maxCombo: this.payout.maxCombo,
+        bigCharges: this.payout.bigStoneCharges,
+        shield: this.gauges.heatShieldSec,
+        coolingScale: this.gauges.coolingScale,
+        damageScale: this.gauges.damageScaleValue,
       }),
       addStones: (n: number) => {
         this.payout.stoneCount += n;
       },
+      addBigStone: () => {
+        this.payout.bigStoneCharges += 1;
+      },
       setTemperature: (t: number) => {
         this.gauges.temperature = t;
       },
+      setTotonoi: (v: number) => {
+        this.gauges.totonoi = v;
+      },
+      /** 水風呂ボタン相当（ととのい MAX でなければ何もしない） */
+      coldBath: () => this.enterColdBath(false),
+      /** アイテム効果を直接発動する（盤面を経由しない） */
+      useItem: (id: ItemId) => itemDef(id).onPayout(this),
+      /** イベント購読。シナリオ計測でロスト数や大玉のペイアウトを数える */
+      bus: this.bus,
       start: () => this.beginPlaying(),
       /** ストーンの分布を調べる。盤面のどこで詰まっているかの診断用 */
       dump: () => {
@@ -889,6 +1104,9 @@ export class Game implements GameContext {
     return {
       addStones: (n: number) => {
         this.payout.stoneCount += n;
+      },
+      addBigStone: () => {
+        this.payout.bigStoneCharges += 1;
       },
       setTemperature: (t: number) => {
         this.gauges.temperature = t;

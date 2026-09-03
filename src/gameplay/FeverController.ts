@@ -79,9 +79,16 @@ export class FeverController {
     this.timer = 0;
     this.auto = auto;
     this.params = auto
-      ? { multiplier: BALANCE.fever.autoMultiplier, duration: BALANCE.fever.baseDurationSec }
+      ? { multiplier: BALANCE.fever.autoMultiplier, duration: BALANCE.fever.autoDurationSec }
       : feverParamsFor(temperature);
     return this.params;
+  }
+
+  /** 砂時計。フィーバー中のみ継続時間を延ばす。延ばせたら true */
+  extend(seconds: number): boolean {
+    if (this.phase !== 'fever') return false;
+    this.params = { ...this.params, duration: this.params.duration + seconds };
+    return true;
   }
 
   /**

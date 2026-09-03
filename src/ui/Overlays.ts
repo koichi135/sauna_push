@@ -6,6 +6,8 @@ export interface ResultData {
   score: number;
   totonoiCount: number;
   totalPaid: number;
+  maxCombo: number;
+  bestMultiplier: number;
   highScore: number;
   isHighScore: boolean;
 }
@@ -34,6 +36,8 @@ export class Overlays {
   private readonly resultScore = el('result-score');
   private readonly resultTotonoi = el('result-totonoi');
   private readonly resultPayout = el('result-payout');
+  private readonly resultCombo = el('result-combo');
+  private readonly resultMult = el('result-mult');
   private readonly resultHighScore = el('result-highscore');
   private readonly resultNewRecord = el('result-newrecord');
   private readonly muteBtn = el<HTMLButtonElement>('btn-mute');
@@ -77,6 +81,8 @@ export class Overlays {
     this.resultScore.textContent = String(data.score);
     this.resultTotonoi.textContent = String(data.totonoiCount);
     this.resultPayout.textContent = String(data.totalPaid);
+    this.resultCombo.textContent = String(data.maxCombo);
+    this.resultMult.textContent = `×${data.bestMultiplier.toFixed(1)}`;
     this.resultHighScore.textContent = String(data.highScore);
     this.resultNewRecord.hidden = !data.isHighScore;
     this.show('result');

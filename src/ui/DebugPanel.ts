@@ -86,6 +86,17 @@ const GROUPS: Group[] = [
     ],
   },
   {
+    title: 'コンボ / セット',
+    sliders: [
+      { path: 'combo.windowSec', label: '連鎖窓(s)', min: 0.2, max: 3, step: 0.1 },
+      { path: 'combo.scorePerStep', label: '倍率/段', min: 0, max: 0.5, step: 0.01 },
+      { path: 'combo.bigStoneEvery', label: '大玉まで', min: 3, max: 30, step: 1 },
+      { path: 'sets.coolingPerSet', label: '放熱↑/set', min: 0, max: 0.3, step: 0.01 },
+      { path: 'sets.damagePerSet', label: 'ダメ↑/set', min: 0, max: 0.5, step: 0.01 },
+      { path: 'fever.autoDurationSec', label: '自動F秒数', min: 0, max: 14, step: 0.5 },
+    ],
+  },
+  {
     title: 'ロウリュ',
     sliders: [
       { path: 'loyly.cooldownSec', label: 'クールタイム', min: 2, max: 40, step: 0.5 },
@@ -100,6 +111,7 @@ const GROUPS: Group[] = [
 
 export interface DebugActions {
   addStones: (n: number) => void;
+  addBigStone: () => void;
   setTemperature: (t: number) => void;
   forceColdBath: () => void;
   spawnItem: () => void;
@@ -148,6 +160,7 @@ export class DebugPanel {
     actionRow.className = 'debug-actions';
     const buttons: [string, () => void][] = [
       ['🪨+30', () => actions.addStones(30)],
+      ['大玉+1', () => actions.addBigStone()],
       ['温度90', () => actions.setTemperature(90)],
       ['温度55', () => actions.setTemperature(55)],
       ['水風呂', () => actions.forceColdBath()],

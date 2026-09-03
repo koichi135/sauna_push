@@ -9,10 +9,10 @@ import type { GameContext } from './GameContext';
  */
 
 /**
- * 仕様 8章で承認済みのアイテムのみ。8.3 の追加案は未承認のため実装しない。
+ * 仕様 8章のオロポに加え、8.3 の追加案（ヴィヒタ／サウナハット／砂時計）を採用した。
  * ロウリュは常設ボタン＋クールタイム制に変わったため、盤面アイテムからは外した。
  */
-export type ItemId = 'oropo';
+export type ItemId = 'oropo' | 'vihta' | 'hat' | 'hourglass';
 
 export interface ItemDef {
   readonly id: ItemId;
@@ -30,7 +30,7 @@ export interface ItemDef {
 export const ITEM_DEFS: readonly ItemDef[] = [
   {
     id: 'oropo',
-    weight: 1,
+    weight: 3,
     modelKey: 'can',
     label: 'オロポ',
     color: 0xffe14d,
@@ -39,6 +39,45 @@ export const ITEM_DEFS: readonly ItemDef[] = [
       ctx.healStamina(BALANCE.items.oropo.staminaGain);
       ctx.slowMotion(BALANCE.items.oropo.slowMoScale, BALANCE.items.oropo.slowMoSec);
       ctx.bus.emit('OROPO_DRUNK', { staminaGain: BALANCE.items.oropo.staminaGain });
+    },
+  },
+  {
+    // 白樺の葉束。盤面のストーンをまとめて手前へ扇ぐ＝山崩し。大量ペイアウトとコンボの種
+    id: 'vihta',
+    weight: 3,
+    modelKey: 'vihta',
+    label: 'ヴィヒタ',
+    color: 0x6cc24a,
+    requiresAiming: false,
+    onPayout(ctx) {
+      ctx.pushAllStones(BALANCE.items.vihta.pushVelocity, BALANCE.items.vihta.liftVelocity);
+    },
+  },
+  {
+    // 耐熱。灼熱帯に踏み込んで最大倍率を狙う時間を買える
+    id: 'hat',
+    weight: 2,
+    modelKey: 'hat',
+    label: 'サウナハット',
+    color: 0xd9c9a8,
+    requiresAiming: false,
+    onPayout(ctx) {
+      ctx.addHeatShield(BALANCE.items.hat.shieldSec);
+    },
+  },
+  {
+    // フィーバー中なら延長、それ以外はととのいを即加算
+    id: 'hourglass',
+    weight: 2,
+    modelKey: 'hourglass',
+    label: '砂時計',
+    color: 0xb48cff,
+    requiresAiming: false,
+    onPayout(ctx) {
+      ctx.extendFeverOrTotonoi(
+        BALANCE.items.hourglass.feverExtendSec,
+        BALANCE.items.hourglass.totonoiGain,
+      );
     },
   },
 ];

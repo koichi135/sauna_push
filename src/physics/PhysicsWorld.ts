@@ -22,6 +22,10 @@ export interface TrackedBody {
   prevSpeed: number;
   /** ロウリュで濡れている残り秒数。0 なら乾いている */
   wetRemaining: number;
+  /** 大玉ストーンか。描画のスケールとペイアウト価値に効く */
+  readonly big: boolean;
+  /** ペイアウト時に何個ぶんとして扱うか（通常 1、大玉は BALANCE.bigStone.value） */
+  readonly value: number;
 }
 
 export type SensorKind = 'payout' | 'lost';
@@ -234,8 +238,16 @@ export class PhysicsWorld {
 
   // ---------------------------------------------------------------- 動的ボディ
 
-  spawnStone(x: number, y: number, z: number, vz: number): TrackedBody {
+  /**
+   * ストーンを投入する。
+   * @param big 大玉ストーン。半径・厚みを BALANCE.bigStone のスケールで拡大し、
+   *            ペイアウト価値を value 個ぶんにする。質量は体積に比例して約 5 倍になる
+   */
+  spawnStone(x: number, y: number, z: number, vz: number, big = false): TrackedBody {
     const s = BALANCE.physics.stone;
+    const b = BALANCE.bigStone;
+    const radius = big ? s.radius * b.radiusScale : s.radius;
+    const thickness = big ? s.thickness * b.thicknessScale : s.thickness;
     const desc = RAPIER.RigidBodyDesc.dynamic()
       .setTranslation(x, y, z)
       .setLinvel(0, 0, vz)
@@ -243,7 +255,29 @@ export class PhysicsWorld {
       .setAngvel({ x: (Math.random() - 0.5) * 2, y: (Math.random() - 0.5) * 2, z: (Math.random() - 0.5) * 2 })
       .setLinearDamping(s.linearDamping)
       .setAngularDamping(s.angularDamping)
-      // ストーンの CCD は無効（仕様 3章）。数が多く、コストに見合わない
+      // 通常ストーンの CCD は無効（仕様 3章）。大玉は数が少なく取りこぼすと痛いので有効
+      .setCcdEnabled(big);
+    const body = this.world.createRigidBody(desc);
+    const collider = RAPIER.ColliderDesc.cylinder(thickness / 2, radius)
+      .setFriction(s.friction)
+      .setRestitution(s.restitution)
+      .setDensity(s.density)
+      .setCollisionGroups(GROUP_STONE)
+      .setActiveEvents(RAPIER.ActiveEvents.COLLISION_EVENTS);
+    const col = this.world.createCollider(collider, body);
+    return this.track('stone', body, col, undefined, big);
+  }
+
+  /**
+   * 静止したストーンを置く（初期山用）。初速・回転なし。
+   * 積んだ後は settle() で落ち着かせること。
+   */
+  placeStone(x: number, y: number, z: number): TrackedBody {
+    const s = BALANCE.physics.stone;
+    const desc = RAPIER.RigidBodyDesc.dynamic()
+      .setTranslation(x, y, z)
+      .setLinearDamping(s.linearDamping)
+      .setAngularDamping(s.angularDamping)
       .setCcdEnabled(false);
     const body = this.world.createRigidBody(desc);
     const collider = RAPIER.ColliderDesc.cylinder(s.thickness / 2, s.radius)
@@ -254,6 +288,44 @@ export class PhysicsWorld {
       .setActiveEvents(RAPIER.ActiveEvents.COLLISION_EVENTS);
     const col = this.world.createCollider(collider, body);
     return this.track('stone', body, col);
+  }
+
+  /**
+   * 描画もイベントも挟まずに物理だけを回す（初期山を落ち着かせる用）。
+   * この間にセンサーへ落ちたものは、スコアにも手持ちにも数えず黙って消す。
+   * 落ち着いた後に衝突音が一斉に鳴らないよう prevSpeed も揃える。
+   */
+  settle(steps: number): void {
+    for (let i = 0; i < steps; i += 1) {
+      this.world.step(this.eventQueue);
+      const hit: TrackedBody[] = [];
+      this.eventQueue.drainCollisionEvents((h1, h2, started) => {
+        if (!started) return;
+        if (!this.sensorKinds.has(h1) && !this.sensorKinds.has(h2)) return;
+        const tracked = this.colliderToBody.get(this.sensorKinds.has(h1) ? h2 : h1);
+        if (tracked) hit.push(tracked);
+      });
+      for (const t of hit) this.remove(t);
+    }
+    for (const t of this.bodies.values()) {
+      const v = t.body.linvel();
+      t.prevSpeed = Math.hypot(v.x, v.y, v.z);
+    }
+  }
+
+  /**
+   * 盤面上の全ストーンを手前へ扇ぐ（ヴィヒタ）。
+   * 速度変化として与えるので、大玉も通常ストーンも同じだけ動く。
+   */
+  pushAllStones(velocityZ: number, liftY: number): number {
+    let n = 0;
+    for (const t of this.bodies.values()) {
+      if (t.kind !== 'stone') continue;
+      const mass = t.body.mass();
+      t.body.applyImpulse({ x: 0, y: mass * liftY, z: -mass * velocityZ }, true);
+      n += 1;
+    }
+    return n;
   }
 
   spawnItem(itemId: string, x: number, y: number, z: number): TrackedBody {
@@ -280,6 +352,7 @@ export class PhysicsWorld {
     body: RAPIER.RigidBody,
     collider: RAPIER.Collider,
     itemId?: string,
+    big = false,
   ): TrackedBody {
     const tracked: TrackedBody = {
       id: this.nextId++,
@@ -288,6 +361,8 @@ export class PhysicsWorld {
       collider,
       prevSpeed: 0,
       wetRemaining: 0,
+      big,
+      value: big ? BALANCE.bigStone.value : 1,
       ...(itemId !== undefined ? { itemId } : {}),
     };
     this.bodies.set(tracked.id, tracked);
@@ -327,7 +402,8 @@ export class PhysicsWorld {
     const sleeping: TrackedBody[] = [];
     const awake: TrackedBody[] = [];
     for (const t of this.bodies.values()) {
-      if (t.kind !== 'stone') continue;
+      // 大玉はコンボ報酬なので間引かない
+      if (t.kind !== 'stone' || t.big) continue;
       (t.body.isSleeping() ? sleeping : awake).push(t);
     }
     // 奥（Z が大きい）から消す。プレイヤーが見ている手前の山は最後まで残す。
