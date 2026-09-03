@@ -180,6 +180,13 @@ export class AudioEngine {
     this.playTone(420, 110, 1.6, 'sawtooth', 0.16);
   }
 
+  /** タイムアタックを生き延びてクリアしたときの上昇ファンファーレ */
+  playRunClear(): void {
+    this.playTone(440, 660, 0.22, 'triangle', 0.16);
+    window.setTimeout(() => this.playTone(660, 880, 0.28, 'triangle', 0.16), 160);
+    window.setTimeout(() => this.playTone(880, 1320, 0.5, 'triangle', 0.18), 340);
+  }
+
   /** 大玉ストーンの獲得（上昇するファンファーレ）とペイアウト（重い着地音） */
   playBigStoneEarned(): void {
     this.playTone(523, 784, 0.18, 'triangle', 0.14);

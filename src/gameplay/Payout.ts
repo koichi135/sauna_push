@@ -1,5 +1,6 @@
 import { BALANCE } from '../core/BalanceConfig';
 import type { EventBus } from '../core/EventBus';
+import type { RunModifiers } from './RunModifiers';
 
 /**
  * 手持ちストーンの収支・スコア・コンボ（仕様 5章 / 15章3項）。
@@ -40,6 +41,16 @@ export class Payout {
   /** 到達した最大フィーバー倍率。リザルト表示用 */
   bestMultiplier = 1;
 
+  /** パーク由来の倍率・加算値。Game が resetRun/perk 適用時に反映する */
+  private runScoreMult = 1;
+  private runStoneGainBonus = 0;
+  private runComboStepBonus = 0;
+  private runComboWindowBonus = 0;
+  /** 大玉ストーンの価値への加算。パーク「大玉職人」で増える */
+  bigStoneValueBonus = 0;
+  /** ヴィヒタの永続レリック効果によるコンボ猶予の加算。拾うたびに増える */
+  private relicComboWindowBonus = 0;
+
   private lastPayoutSec = -Infinity;
   /** 直前の節目判定に使った連鎖数。同じ節目で二重に報酬を出さない */
   private lastMilestoneCombo = 0;
@@ -51,9 +62,38 @@ export class Payout {
     return this.stoneCount <= 0;
   }
 
+  private comboWindowSec(): number {
+    return BALANCE.combo.windowSec + this.runComboWindowBonus + this.relicComboWindowBonus;
+  }
+
+  /** ヴィヒタの永続レリック効果。拾うたびにコンボ猶予がわずかに伸びる */
+  addRelicComboWindow(seconds: number): void {
+    this.relicComboWindowBonus += seconds;
+  }
+
+  /** 連鎖数 → スコア倍率。1 個目は ×1.0、以降 1 段ごとに scorePerStep（+パーク分）ずつ伸びる */
+  private comboMultiplierFor(combo: number): number {
+    const c = BALANCE.combo;
+    const steps = Math.max(0, Math.min(combo - 1, c.maxSteps));
+    return 1 + steps * (c.scorePerStep + this.runComboStepBonus);
+  }
+
   /** 現在の連鎖数に対するスコア倍率 */
   get comboMultiplier(): number {
-    return comboMultiplierFor(this.combo);
+    return this.comboMultiplierFor(this.combo);
+  }
+
+  /**
+   * アイテム／パークの永続効果をまとめて反映する。ラン開始時とパーク選択時・
+   * アイテム取得時に呼ばれる。値は保持するだけで、毎ステップ再計算はしない
+   * （更新頻度が低いのでキャッシュして問題ない）。
+   */
+  setRunModifiers(mods: RunModifiers): void {
+    this.runScoreMult = mods.scoreMult;
+    this.runStoneGainBonus = mods.stoneGainBonus;
+    this.runComboStepBonus = mods.comboScorePerStepBonus;
+    this.runComboWindowBonus = mods.comboWindowBonusSec;
+    this.bigStoneValueBonus = mods.bigStoneValueBonus;
   }
 
   /** 投入できるか。フィーバー中は手持ち消費なし（仕様 7.2） */
@@ -85,7 +125,7 @@ export class Payout {
    */
   registerPayout(count: number, feverMultiplier: number, now: number): PayoutResult {
     const c = BALANCE.combo;
-    if (now - this.lastPayoutSec <= c.windowSec) {
+    if (now - this.lastPayoutSec <= this.comboWindowSec()) {
       this.combo += count;
     } else {
       this.combo = count;
@@ -95,11 +135,13 @@ export class Payout {
     this.lastPayoutSec = now;
     if (this.combo > this.maxCombo) this.maxCombo = this.combo;
 
-    this.stoneCount += BALANCE.stones.gainPerPayout * count;
+    this.stoneCount += (BALANCE.stones.gainPerPayout + this.runStoneGainBonus) * count;
     this.totalPaid += count;
 
     const comboMultiplier = this.comboMultiplier;
-    const amount = Math.round(BALANCE.score.perPayout * count * feverMultiplier * comboMultiplier);
+    const amount = Math.round(
+      BALANCE.score.perPayout * count * feverMultiplier * comboMultiplier * this.runScoreMult,
+    );
     this.score += amount;
     this.bus.emit('SCORE_ADDED', { amount, total: this.score });
     this.bus.emit('COMBO_ADVANCED', { combo: this.combo, multiplier: comboMultiplier });
@@ -130,7 +172,7 @@ export class Payout {
 
   /** 固定ステップごとに呼ぶ。コンボ窓を過ぎたら連鎖を閉じる。 */
   update(now: number): void {
-    if (this.combo > 0 && now - this.lastPayoutSec > BALANCE.combo.windowSec) {
+    if (this.combo > 0 && now - this.lastPayoutSec > this.comboWindowSec()) {
       const reached = this.combo;
       this.combo = 0;
       this.lastMilestoneCombo = 0;
@@ -142,8 +184,7 @@ export class Payout {
   /** コンボ窓の残り割合 1..0（HUD 用） */
   comboWindowRatio(now: number): number {
     if (this.combo <= 0) return 0;
-    const w = BALANCE.combo.windowSec;
-    return Math.max(0, 1 - (now - this.lastPayoutSec) / w);
+    return Math.max(0, 1 - (now - this.lastPayoutSec) / this.comboWindowSec());
   }
 
   /**
@@ -161,6 +202,12 @@ export class Payout {
     return amount;
   }
 
+  /** タイムアタックを生き延びた時の生存ボーナス（体力割合を掛ける） */
+  addSurvivalBonus(amount: number): void {
+    this.score += amount;
+    this.bus.emit('SCORE_ADDED', { amount, total: this.score });
+  }
+
   reset(): void {
     this.stoneCount = BALANCE.stones.initial;
     this.score = 0;
@@ -170,17 +217,16 @@ export class Payout {
     this.maxCombo = 0;
     this.bigStoneCharges = 0;
     this.bestMultiplier = 1;
+    this.runScoreMult = 1;
+    this.runStoneGainBonus = 0;
+    this.runComboStepBonus = 0;
+    this.runComboWindowBonus = 0;
+    this.bigStoneValueBonus = 0;
+    this.relicComboWindowBonus = 0;
     this.lastPayoutSec = -Infinity;
     this.lastMilestoneCombo = 0;
     this.lastBigStoneCombo = 0;
   }
-}
-
-/** 連鎖数 → スコア倍率。1 個目は ×1.0、以降 1 段ごとに scorePerStep ずつ伸びる */
-export function comboMultiplierFor(combo: number): number {
-  const c = BALANCE.combo;
-  const steps = Math.max(0, Math.min(combo - 1, c.maxSteps));
-  return 1 + steps * c.scorePerStep;
 }
 
 const HIGH_SCORE_KEY = 'sauna-push.highscore';

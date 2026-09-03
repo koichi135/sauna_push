@@ -3,14 +3,17 @@ import { BALANCE } from '../core/BalanceConfig';
 /**
  * ロウリュ（常設ボタン＋クールタイム制）。
  *
- * ボタンを押すとロウリュモードに入り、盤面をタップすると水をかける。
- * 水がかかったストーンは濡れて黒くなり、一定時間 蒸気を上げ続け、
- * その間だけ室温が上がる。かけた瞬間に温度が跳ねるのではなく
- * 「濡れている間じわじわ上がる」ので、どこにかけて何個濡らせるかが効きを決める。
+ * FB「存在意義がわからない死に仕様」への対応で全面変更した。
+ * ボタンを押すとロウリュモードに入り、盤面をタップすると狙った地点の山へ
+ * 即座に衝撃を与えて手前へ押し出す（ヴィヒタの局所版）。押し出されたストーンは
+ * 0.4 秒のコンボ窓に乗るので、「詰まった山をロウリュでほぐしてコンボにする」が
+ * 攻略の核になる。副次効果として軽く濡れて温度も少し上がる。
  */
 export class LoylyController {
   private cooldownRemaining = 0;
   private modeRemaining = 0;
+  /** パーク「ロウリュ達人」でクールダウンを縮める倍率。Game が perk 適用時に設定する */
+  private cooldownMult = 1;
 
   /** ロウリュモード中か */
   get isActive(): boolean {
@@ -24,7 +27,7 @@ export class LoylyController {
 
   /** クールタイムの進捗 0（明け）..1（使った直後）。ボタンの残量表示用 */
   get cooldownRatio(): number {
-    return this.cooldownRemaining / BALANCE.loyly.cooldownSec;
+    return this.cooldownRemaining / (BALANCE.loyly.cooldownSec * this.cooldownMult);
   }
 
   get cooldownRemainingSec(): number {
@@ -34,6 +37,10 @@ export class LoylyController {
   /** ロウリュモードの残り時間の割合 1..0 */
   get modeRatio(): number {
     return this.modeRemaining / BALANCE.loyly.modeTimeoutSec;
+  }
+
+  setCooldownMult(mult: number): void {
+    this.cooldownMult = mult;
   }
 
   /** モードに入る。クールタイム中なら false */
@@ -51,7 +58,7 @@ export class LoylyController {
   /** 水をかけた。モードを抜けてクールタイムに入る */
   consume(): void {
     this.modeRemaining = 0;
-    this.cooldownRemaining = BALANCE.loyly.cooldownSec;
+    this.cooldownRemaining = BALANCE.loyly.cooldownSec * this.cooldownMult;
   }
 
   /**
@@ -72,5 +79,6 @@ export class LoylyController {
   reset(): void {
     this.cooldownRemaining = 0;
     this.modeRemaining = 0;
+    this.cooldownMult = 1;
   }
 }

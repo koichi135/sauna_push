@@ -101,11 +101,16 @@ const GROUPS: Group[] = [
     sliders: [
       { path: 'loyly.cooldownSec', label: 'クールタイム', min: 2, max: 40, step: 0.5 },
       { path: 'loyly.radius', label: '影響半径', min: 0.04, max: 0.3, step: 0.01 },
+      { path: 'loyly.pushVelocity', label: '押し出し速度', min: 0.1, max: 1.2, step: 0.02 },
       { path: 'loyly.wetDurationSec', label: '濡れ時間', min: 1, max: 20, step: 0.5 },
       { path: 'loyly.tempPerStonePerSec', label: '温度/個/s', min: 0.05, max: 3, step: 0.05 },
       { path: 'loyly.maxStones', label: '個数上限', min: 1, max: 30, step: 1 },
       { path: 'loyly.wetDarkness', label: '濡れの黒さ', min: 0, max: 0.95, step: 0.01 },
     ],
+  },
+  {
+    title: 'ラン',
+    sliders: [{ path: 'run.durationSec', label: '制限時間(s)', min: 30, max: 360, step: 10 }],
   },
 ];
 

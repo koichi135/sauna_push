@@ -10,6 +10,8 @@ export interface ResultData {
   bestMultiplier: number;
   highScore: number;
   isHighScore: boolean;
+  /** タイムアタックの時間切れで終えた（＝クリア）か。false は体力切れの失敗 */
+  cleared: boolean;
 }
 
 export interface OverlayCallbacks {
@@ -40,6 +42,7 @@ export class Overlays {
   private readonly resultMult = el('result-mult');
   private readonly resultHighScore = el('result-highscore');
   private readonly resultNewRecord = el('result-newrecord');
+  private readonly resultHeading = el('result-heading');
   private readonly muteBtn = el<HTMLButtonElement>('btn-mute');
 
   private current: ScreenId = 'loading';
@@ -78,6 +81,7 @@ export class Overlays {
   }
 
   showResult(data: ResultData): void {
+    this.resultHeading.textContent = data.cleared ? 'クリア！' : 'のぼせました';
     this.resultScore.textContent = String(data.score);
     this.resultTotonoi.textContent = String(data.totonoiCount);
     this.resultPayout.textContent = String(data.totalPaid);

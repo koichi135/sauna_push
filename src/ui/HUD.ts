@@ -28,6 +28,15 @@ export interface HudState {
   loylyCooldownSec: number;
   /** コンボ窓の残り割合 1..0 */
   comboWindowRatio: number;
+  /** タイムアタックの残り秒数 */
+  runRemainingSec: number;
+}
+
+/** パーク選択カードに渡す表示用データ */
+export interface PerkCard {
+  readonly icon: string;
+  readonly label: string;
+  readonly description: string;
 }
 
 export type PopupKind = 'normal' | 'combo' | 'big' | 'bonus';
@@ -45,7 +54,10 @@ export class HUD {
   private readonly feverTime = el('fever-time');
   private readonly feverFill = el('fever-fill');
   private readonly statusChips = el('status-chips');
-  private readonly shieldChip = el('chip-shield');
+  private readonly runTimerValue = el('run-timer-value');
+  private readonly runTimer = el('run-timer');
+  private readonly perkDraft = el('perk-draft');
+  private readonly perkCards = el('perk-cards');
   private readonly tempBand = el('temp-band');
   private readonly tempValue = el('temp-value');
   private readonly tempBands = el('temp-bands');
@@ -156,12 +168,12 @@ export class HUD {
     this.totonoiAuto.style.width = `${Math.max(0, state.autoBathRatio) * 100}%`;
     this.totonoiAuto.hidden = state.autoBathRatio <= 0;
 
-    // 体力
-    const staminaRatio = gauges.stamina / BALANCE.stamina.max;
+    // 体力（パーク「頑丈な体」で最大値が伸びる）
+    const staminaRatio = gauges.stamina / gauges.maxStamina;
     this.staminaFill.style.width = `${staminaRatio * 100}%`;
     const warning = staminaRatio <= BALANCE.stamina.warningRatio;
     this.staminaBar.classList.toggle('warning', warning);
-    this.staminaBar.classList.toggle('shielded', gauges.hasHeatShield);
+    this.staminaBar.classList.toggle('shielded', gauges.relicDamageStacks > 0);
 
     // 手持ちストーン
     this.stoneCount.textContent = String(payout.stoneCount);
@@ -185,11 +197,15 @@ export class HUD {
       this.feverFill.style.width = `${Math.max(0, 1 - state.feverProgress) * 100}%`;
     }
 
-    // 状態チップ（サウナハット）
-    const shield = gauges.heatShieldSec;
-    this.shieldChip.hidden = shield <= 0;
-    if (shield > 0) this.shieldChip.textContent = `🎩 耐熱 ${shield.toFixed(1)}s`;
-    this.statusChips.hidden = shield <= 0;
+    // 状態チップ: 永続レリックのスタック数を表示する（ローグライクのビルド確認用）
+    this.updateStatusChips(gauges.relicDamageStacks);
+
+    // タイムアタックの残り時間
+    const t = Math.max(0, Math.ceil(state.runRemainingSec));
+    const mm = Math.floor(t / 60);
+    const ss = String(t % 60).padStart(2, '0');
+    this.runTimerValue.textContent = `${mm}:${ss}`;
+    this.runTimer.classList.toggle('warning', t <= 30);
 
     // 水風呂ボタン（点灯時のみ表示）
     this.coldBathBtn.hidden = !state.coldBathReady;
@@ -222,6 +238,19 @@ export class HUD {
     this.updateCombo(payout.combo, payout.comboMultiplier, state.comboWindowRatio);
   }
 
+  private updateStatusChips(heatResistStacks: number): void {
+    const chips: string[] = [];
+    if (heatResistStacks > 0) chips.push(`🎩×${heatResistStacks}`);
+    this.statusChips.replaceChildren(
+      ...chips.map((text) => {
+        const span = document.createElement('span');
+        span.className = 'chip';
+        span.textContent = text;
+        return span;
+      }),
+    );
+  }
+
   private updateCombo(combo: number, multiplier: number, windowRatio: number): void {
     if (combo <= 1) {
       // 1 個だけの落下はコンボとして見せない（ノイズになる）
@@ -250,6 +279,41 @@ export class HUD {
     // クラス再付与でアニメーションを再生し直す
     void this.throwLaneMarker.offsetWidth;
     this.throwLaneMarker.classList.add('hit');
+  }
+
+  /**
+   * パーク選択画面を表示する。カードをタップすると onPick(index) を呼ぶ。
+   * 呼ぶたびに前回のカードは作り直す（選択肢は毎回入れ替わるため）。
+   */
+  showPerkDraft(cards: readonly PerkCard[], onPick: (index: number) => void): void {
+    this.perkCards.replaceChildren(
+      ...cards.map((card, index) => {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'perk-card';
+        const icon = document.createElement('div');
+        icon.className = 'perk-card-icon';
+        icon.textContent = card.icon;
+        const label = document.createElement('div');
+        label.className = 'perk-card-label';
+        label.textContent = card.label;
+        const desc = document.createElement('div');
+        desc.className = 'perk-card-desc';
+        desc.textContent = card.description;
+        btn.append(icon, label, desc);
+        btn.addEventListener('pointerdown', (ev) => {
+          ev.preventDefault();
+          onPick(index);
+        });
+        return btn;
+      }),
+    );
+    this.perkDraft.hidden = false;
+  }
+
+  hidePerkDraft(): void {
+    this.perkDraft.hidden = true;
+    this.perkCards.replaceChildren();
   }
 
   /** ロウリュモードの表示。remainingRatio はモード残り時間の割合 */
@@ -348,7 +412,8 @@ export class HUD {
     this.aimOverlay.hidden = true;
     this.combo.hidden = true;
     this.bigStoneBadge.hidden = true;
-    this.statusChips.hidden = true;
+    this.statusChips.replaceChildren();
+    this.hidePerkDraft();
     this.toastArea.replaceChildren();
     this.popupLayer.replaceChildren();
     this.popups.length = 0;

@@ -20,6 +20,8 @@ import { FeverController, feverParamsFor } from './FeverController';
 import { LoylyController } from './Loyly';
 import { ItemSystem, itemDef, type ItemId } from './ItemSystem';
 import type { GameContext } from './GameContext';
+import { RunModifiers } from './RunModifiers';
+import { draftPerks, type PerkDef } from './Perks';
 
 /**
  * ゲーム全体の組み立て（仕様 11章の状態機械が中心）。
@@ -67,8 +69,14 @@ export class Game implements GameContext {
   private gameOverDelay = 0;
   /** 水風呂の歪み演出の強さ 0..1 */
   private waterAmount = 0;
-  /** このランでゲージが動いていた累計秒数。時間による難度上昇に使う */
+  /** このランの経過秒数（時間切れタイムアタックの判定・難度上昇に使う） */
   private runSec = 0;
+  /** ラン終了が時間切れクリアか体力切れ失敗か。RESULT 表示に使う */
+  private runCleared = false;
+  /** パーク選択（Perks.ts）で積み上がる、このラン限りの永続倍率・加算値 */
+  private readonly mods = new RunModifiers();
+  /** 現在パーク選択画面に出している 3 択 */
+  private pendingPerks: readonly PerkDef[] = [];
   /** 固定ステップで発生し、次の描画で画面座標へ投影して出すスコア表示 */
   private readonly pendingPopups: {
     x: number;
@@ -224,7 +232,13 @@ export class Game implements GameContext {
     // 画面座標の左右と world の X は向きが逆（BalanceConfig の screenToWorldXSign 参照）。
     // ここで符号を合わせないと、タップした側と反対側にストーンが落ちる。
     const worldX = normalizedX * BALANCE.spawn.screenToWorldXSign;
-    const stone = this.spawner.tryThrow(worldX, this.loop.now, fever, this.payout.nextThrowIsBig);
+    const stone = this.spawner.tryThrow(
+      worldX,
+      this.loop.now,
+      fever,
+      this.payout.nextThrowIsBig,
+      this.payout.bigStoneValueBonus,
+    );
     if (!stone) return;
     const usedBig = this.payout.consumeForThrow(fever);
     if (usedBig) {
@@ -337,21 +351,25 @@ export class Game implements GameContext {
   }
 
   /**
-   * 水をかける。かかったストーンは濡れて黒くなり、一定時間 蒸気を上げる。
-   * 温度はここでは上げない。濡れている間に毎フレーム上がる（updateWetness）。
+   * 水をかける。狙った地点の半径内のストーンへ即座に衝撃を与えて手前へ押し出す
+   * （山をほぐす攻略ツール。README「ロウリュの再設計」参照）。
+   * 押し出されたストーンはコンボ窓に乗るので、詰まった山をコンボに変換できる。
+   * 副次効果として軽く濡れて温度も少し上がる（updateWetness で進む）。
    */
   private pourWater(x: number, z: number): void {
     const l = BALANCE.loyly;
-    const wet = this.physics.wetStonesNear(x, z, l.radius, l.wetDurationSec);
+    const radius = l.radius * this.mods.loylyRadiusMult;
+    const pushed = this.physics.pushStonesNear(x, z, radius, l.pushVelocity, l.liftVelocity);
+    this.physics.wetStonesNear(x, z, radius, l.wetDurationSec);
 
     this.loyly.consume();
     this.splash.play(x, BALANCE.field.lowerTableY + 0.01, z);
     this.steam.burst(x, z);
     this.hud.playFlash('loyly');
-    this.hud.toast(wet > 0 ? `ロウリュ！ ストーン ${wet} 個` : 'ロウリュ（空振り）');
+    this.hud.toast(pushed > 0 ? `ロウリュ！ ${pushed} 個を押し出した` : 'ロウリュ（空振り）');
     this.cameraRig.shake(0.03);
     this.audio.playLoyly();
-    this.bus.emit('LOYLY_FIRED', { x, z, stones: wet, deltaTemp: 0 });
+    this.bus.emit('LOYLY_FIRED', { x, z, stones: pushed, deltaTemp: 0 });
     this.endAiming();
   }
 
@@ -380,19 +398,21 @@ export class Game implements GameContext {
     this.audio.playVihta();
   }
 
-  addHeatShield(seconds: number): void {
-    this.gauges.addHeatShield(seconds);
-    this.hud.toast(`サウナハット 耐熱 ${seconds.toFixed(0)}秒`, 'good');
+  addPermanentComboWindow(seconds: number): void {
+    this.payout.addRelicComboWindow(seconds);
+    this.hud.toast('ヴィヒタのお守り 連鎖猶予アップ（永続）', 'good');
+    this.audio.playVihta();
+  }
+
+  addPermanentDamageResist(mult: number): void {
+    this.gauges.addRelicDamageResist(mult);
+    this.hud.toast(`サウナハット 耐熱グレード ${this.gauges.relicDamageStacks} 段（永続）`, 'good');
     this.audio.playHat();
   }
 
-  extendFeverOrTotonoi(feverSeconds: number, totonoiGain: number): void {
-    if (this.fever.extend(feverSeconds)) {
-      this.hud.toast(`砂時計 外気浴 +${feverSeconds.toFixed(0)}秒`, 'good');
-    } else {
-      this.gauges.addTotonoi(totonoiGain);
-      this.hud.toast(`砂時計 ととのい +${totonoiGain}`, 'good');
-    }
+  addPermanentFeverDuration(seconds: number): void {
+    this.fever.relicDurationBonusSec += seconds;
+    this.hud.toast(`砂時計 外気浴 +${seconds.toFixed(0)}秒 蓄積（永続）`, 'good');
     this.audio.playHourglass();
   }
 
@@ -413,14 +433,18 @@ export class Game implements GameContext {
     const culled = this.physics.cullExcess();
     if (culled > 0) this.bus.emit('STONE_CULLED', { count: culled });
 
+    // タイムアタックの時計は PERK_DRAFT（考える時間）だけ止める。COLD_BATH の演出は含める
+    if (this.machine.gaugesRunning || this.machine.state === 'COLD_BATH') {
+      this.runSec += dt;
+      this.updateDifficulty();
+    }
+
     if (this.machine.gaugesRunning) {
       this.gauges.update(dt, this.loop.now, {
         starving: this.payout.isStarving,
         fever: this.fever.isFever,
       });
       this.payout.update(this.loop.now);
-      this.runSec += dt;
-      this.updateDifficulty();
       this.updateItems(dt);
       this.updateLoyly(dt);
       this.updateWetness(dt);
@@ -428,7 +452,7 @@ export class Game implements GameContext {
     }
 
     this.updateFever(dt);
-    this.checkGameOver(dt);
+    this.checkRunEnd(dt);
   }
 
   private handleSensorHits(payouts: TrackedBody[], losts: TrackedBody[]): void {
@@ -603,7 +627,12 @@ export class Game implements GameContext {
     if (this.machine.state === 'AIMING') this.endAiming();
     if (!this.machine.transition('COLD_BATH')) return;
 
-    const params = this.fever.enterColdBath(this.gauges.temperature, auto);
+    // パーク「長湯」による継続時間の加算は手動入水のみ効く（自動入水はボーナス無し）
+    const params = this.fever.enterColdBath(
+      this.gauges.temperature,
+      auto,
+      auto ? 0 : this.mods.feverDurationBonusSec,
+    );
     this.cameraRig.setShot('coldBath');
     this.hud.playFlash('water');
     this.hud.setAiming(false);
@@ -618,25 +647,25 @@ export class Game implements GameContext {
   }
 
   private updateFever(dt: number): void {
-    const phase = this.fever.update(dt);
+    // パーク選択中はフィーバーの内部タイマーを凍結する。
+    // coldBath → fever の内部遷移は既に済んでいるが、選択中は timer=0 のまま止めておき、
+    // 考える時間ぶん外気浴の残り時間を消費させないようにする。
+    const phase = this.machine.state === 'PERK_DRAFT' ? 'none' : this.fever.update(dt);
 
     if (phase === 'feverStart') {
       // 入水後、温度は 5 まで低下（仕様 7.1）
       this.gauges.applyColdBath();
       const p = this.fever.pendingParams;
       if (this.fever.enteredAutomatically) {
-        // 放置による自動入水: ボーナスなし・セットに数えない・短い外気浴
+        // 放置による自動入水: ボーナスなし・セットに数えない・短い外気浴。パーク選択も挟まない
         this.hud.toast(`ぬるい外気浴… ${p.duration.toFixed(0)}秒（ボーナスなし）`, 'bad');
+        this.enterFeverState(p);
       } else {
         const bonus = this.payout.registerTotonoi(p.multiplier);
         this.updateDifficulty();
         this.hud.toast(`ととのった！ ×${p.multiplier.toFixed(1)} / ${p.duration.toFixed(1)}秒  +${bonus}`, 'good');
+        this.startPerkDraft();
       }
-      this.machine.transition('FEVER');
-      this.cameraRig.setShot('fever');
-      this.audio.setFeverMusic(true);
-      this.setOutdoorMood(true);
-      this.bus.emit('FEVER_STARTED', { multiplier: p.multiplier, duration: p.duration });
     } else if (phase === 'feverEnd') {
       this.gauges.resetTotonoi();
       if (this.machine.state === 'AIMING') this.endAiming();
@@ -650,6 +679,56 @@ export class Game implements GameContext {
     // 水風呂〜フィーバー序盤の水面歪みを時間で減衰させる
     const targetWater = this.fever.isColdBath ? 1 : 0;
     this.waterAmount += (targetWater - this.waterAmount) * Math.min(1, dt * 6);
+  }
+
+  /** COLD_BATH の内部遷移が済んだ後、実際に FEVER 状態へ入って演出を始める */
+  private enterFeverState(p: { multiplier: number; duration: number }): void {
+    this.machine.transition('FEVER');
+    this.cameraRig.setShot('fever');
+    this.audio.setFeverMusic(true);
+    this.setOutdoorMood(true);
+    this.bus.emit('FEVER_STARTED', { multiplier: p.multiplier, duration: p.duration });
+  }
+
+  // ================================================================ パーク選択
+
+  /**
+   * 手動入水のたびに 3 択のパークを提示する（FB「考える要素が欲しい」対応）。
+   * 選ぶまでフィーバーのタイマーは凍結されているので、じっくり選んでよい。
+   */
+  private startPerkDraft(): void {
+    if (!this.machine.transition('PERK_DRAFT')) {
+      this.enterFeverState(this.fever.pendingParams);
+      return;
+    }
+    this.pendingPerks = draftPerks(3);
+    this.hud.showPerkDraft(
+      this.pendingPerks.map((p) => ({ icon: p.icon, label: p.label, description: p.description })),
+      (index) => this.pickPerk(index),
+    );
+  }
+
+  private pickPerk(index: number): void {
+    if (this.machine.state !== 'PERK_DRAFT') return;
+    const perk = this.pendingPerks[index];
+    if (!perk) return;
+
+    perk.apply(this.mods);
+    this.applyModsToSystems();
+    this.hud.hidePerkDraft();
+    this.pendingPerks = [];
+    this.hud.toast(`${perk.icon} ${perk.label} を獲得！`, 'good');
+    this.enterFeverState(this.fever.pendingParams);
+  }
+
+  /** mods に積んだパーク効果を各サブシステムへ反映する。パーク選択のたびに呼ぶ */
+  private applyModsToSystems(): void {
+    this.pusher.setStrokeMult(this.mods.pusherStrokeMult);
+    this.spawner.setCooldownMult(this.mods.throwCooldownMult);
+    this.loyly.setCooldownMult(this.mods.loylyCooldownMult);
+    this.items.setSpawnRateMult(this.mods.itemSpawnRateMult);
+    this.gauges.setRunModifiers(this.mods);
+    this.payout.setRunModifiers(this.mods);
   }
 
   /** 難度レベル = セット数 + 経過分 × levelPerMinute（BALANCE.sets） */
@@ -679,9 +758,15 @@ export class Game implements GameContext {
     }
   }
 
-  // ================================================================ ゲームオーバー
+  // ================================================================ ラン終了（時間切れクリア／体力切れゲームオーバー）
 
-  private checkGameOver(dt: number): void {
+  /**
+   * FB「目標が不明確」への対応。3分のタイムアタックにし、時間切れまで生き延びれば
+   * クリア（生存ボーナス）、体力が尽きれば失敗、という明確な終わりを作った。
+   * 判定は PLAYING / AIMING / FEVER のときだけ行う（COLD_BATH / PERK_DRAFT 中に
+   * ちょうど時間切れになっても、演出やパーク選択の区切りが付いてから終える）。
+   */
+  private checkRunEnd(dt: number): void {
     if (this.machine.state === 'GAME_OVER') {
       // 少し見せてからリザルトへ
       this.gameOverDelay += dt;
@@ -696,16 +781,37 @@ export class Game implements GameContext {
           bestMultiplier: this.payout.bestMultiplier,
           highScore: this.highScore,
           isHighScore: this.payout.score >= this.highScore && this.payout.score > 0,
+          cleared: this.runCleared,
         });
         this.hud.setVisible(false);
       }
       return;
     }
 
-    if (!this.machine.gaugesRunning || !this.gauges.isDead) return;
+    const judgeable =
+      this.machine.state === 'PLAYING' || this.machine.state === 'AIMING' || this.machine.state === 'FEVER';
+    if (!judgeable) return;
 
+    if (this.gauges.isDead) {
+      this.endRun(false);
+      return;
+    }
+    if (this.runSec >= BALANCE.run.durationSec) {
+      this.endRun(true);
+    }
+  }
+
+  /** @param cleared タイムアタックを時間切れまで生き延びたか。false は体力切れ */
+  private endRun(cleared: boolean): void {
     if (this.machine.state === 'AIMING') this.endAiming();
     if (!this.machine.transition('GAME_OVER')) return;
+
+    this.runCleared = cleared;
+    if (cleared) {
+      const ratio = this.gauges.stamina / this.gauges.maxStamina;
+      const bonus = Math.round(BALANCE.run.survivalBonus * ratio);
+      this.payout.addSurvivalBonus(bonus);
+    }
 
     this.gameOverDelay = 0;
     const isHigh = this.payout.score > this.highScore;
@@ -717,8 +823,9 @@ export class Game implements GameContext {
     this.cameraRig.setShot('gameOver');
     this.cameraRig.shake(0.05);
     this.audio.setFeverMusic(false);
-    this.audio.playGameOver();
-    this.hud.toast('のぼせました…', 'bad');
+    if (cleared) this.audio.playRunClear();
+    else this.audio.playGameOver();
+    this.hud.toast(cleared ? 'タイムアップ！ クリア！' : 'のぼせました…', cleared ? 'good' : 'bad');
     this.bus.emit('GAME_OVER', {
       score: this.payout.score,
       totonoiCount: this.payout.totonoiCount,
@@ -881,7 +988,8 @@ export class Game implements GameContext {
       feverProgress: this.fever.progress,
       coldBathReady,
       pendingMultiplier: pending.multiplier,
-      pendingDuration: pending.duration,
+      // パーク「長湯」・砂時計レリックの加算ぶんも見せる（実際に入るのと同じ数字にする）
+      pendingDuration: pending.duration + this.mods.feverDurationBonusSec + this.fever.relicDurationBonusSec,
       autoBathRatio: coldBathReady
         ? 1 - this.gauges.totonoiFullSec / BALANCE.totonoi.autoColdBathSec
         : 0,
@@ -891,6 +999,7 @@ export class Game implements GameContext {
       loylyActive: this.machine.state === 'AIMING',
       loylyCooldownRatio: this.loyly.cooldownRatio,
       loylyCooldownSec: this.loyly.cooldownRemainingSec,
+      runRemainingSec: BALANCE.run.durationSec - this.runSec,
     });
   }
 
@@ -951,6 +1060,9 @@ export class Game implements GameContext {
     this.gameOverDelay = 0;
     this.waterAmount = 0;
     this.runSec = 0;
+    this.runCleared = false;
+    this.mods.reset();
+    this.pendingPerks = [];
   }
 
   /**
@@ -1042,9 +1154,13 @@ export class Game implements GameContext {
         combo: this.payout.combo,
         maxCombo: this.payout.maxCombo,
         bigCharges: this.payout.bigStoneCharges,
-        shield: this.gauges.heatShieldSec,
+        relicShieldStacks: this.gauges.relicDamageStacks,
         coolingScale: this.gauges.coolingScale,
         damageScale: this.gauges.damageScaleValue,
+        runRemainingSec: BALANCE.run.durationSec - this.runSec,
+        cleared: this.runCleared,
+        maxStamina: this.gauges.maxStamina,
+        perksPending: this.pendingPerks.map((p) => p.id),
       }),
       addStones: (n: number) => {
         this.payout.stoneCount += n;
@@ -1062,6 +1178,8 @@ export class Game implements GameContext {
       coldBath: () => this.enterColdBath(false),
       /** アイテム効果を直接発動する（盤面を経由しない） */
       useItem: (id: ItemId) => itemDef(id).onPayout(this),
+      /** パーク選択画面が出ているとき、n 番目（0 始まり）を選ぶ */
+      pickPerk: (index: number) => this.pickPerk(index),
       /** イベント購読。シナリオ計測でロスト数や大玉のペイアウトを数える */
       bus: this.bus,
       start: () => this.beginPlaying(),

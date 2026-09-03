@@ -12,6 +12,8 @@ export class Pusher {
   /** 0..1 の正規化位相 */
   private phase = 0;
   private stopped = false;
+  /** パーク「太い腕」でストロークを伸ばす倍率。Game が perk 適用時に設定する */
+  private strokeMult = 1;
 
   constructor(private readonly physics: PhysicsWorld) {
     this.physics.setPusherZ(this.zForPhase(0));
@@ -20,6 +22,10 @@ export class Pusher {
   /** 入水演出中はプッシャーを止める（仕様 7.1） */
   setStopped(stopped: boolean): void {
     this.stopped = stopped;
+  }
+
+  setStrokeMult(mult: number): void {
+    this.strokeMult = mult;
   }
 
   update(dt: number, fever: boolean): void {
@@ -37,12 +43,13 @@ export class Pusher {
 
   private zForPhase(phase: number): number {
     const { baseZ, stroke } = BALANCE.pusher;
-    return baseZ + stroke * 0.5 * (1 - Math.cos(2 * Math.PI * phase));
+    return baseZ + stroke * this.strokeMult * 0.5 * (1 - Math.cos(2 * Math.PI * phase));
   }
 
   reset(): void {
     this.phase = 0;
     this.stopped = false;
+    this.strokeMult = 1;
     this.physics.setPusherZ(this.zForPhase(0));
   }
 }

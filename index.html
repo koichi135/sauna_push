@@ -33,9 +33,12 @@
               <span id="fever-time" class="fever-time">8.0s</span>
               <div class="fever-bar"><div id="fever-fill" class="fever-fill"></div></div>
             </div>
-            <div id="status-chips" class="status-chips" hidden>
-              <span id="chip-shield" class="chip" hidden>🎩 耐熱</span>
-            </div>
+            <div id="status-chips" class="status-chips"></div>
+          </div>
+          <!-- タイムアタックの残り時間。目標を明確にするためスコアと並べて常時表示する -->
+          <div id="run-timer" class="run-timer">
+            <div class="run-timer-label">TIME</div>
+            <div id="run-timer-value" class="run-timer-value">3:00</div>
           </div>
         </div>
 
@@ -110,6 +113,12 @@
         </div>
 
         <div id="toast-area" class="toast-area" aria-live="polite"></div>
+
+        <!-- パーク選択（セットのたびに 3 択で永続強化を選ぶ。FB「考える要素が欲しい」対応） -->
+        <div id="perk-draft" class="perk-draft" hidden>
+          <div class="perk-draft-title">ととのった！ パークを選択</div>
+          <div id="perk-cards" class="perk-cards"></div>
+        </div>
       </div>
 
       <!-- ================= オーバーレイ ================= -->
@@ -123,7 +132,7 @@
         <!-- タイトル -->
         <section id="screen-title" class="screen" hidden>
           <h1 class="title">サウナ<span class="title-accent">・</span>コインプッシャー</h1>
-          <p class="tagline">熱すぎず、ぬるすぎず。<br />適温を保って、ととのえ。</p>
+          <p class="tagline">熱すぎず、ぬるすぎず。<br />3分間のタイムアタックでハイスコアを狙え。</p>
           <div class="highscore">ハイスコア <span id="title-highscore">0</span></div>
           <button id="btn-start" class="btn btn-primary" type="button">サウナに入る</button>
           <button id="btn-tutorial" class="btn btn-ghost" type="button">あそびかた</button>
@@ -134,13 +143,15 @@
         <section id="screen-tutorial" class="screen" hidden>
           <h2 class="screen-title">あそびかた</h2>
           <ol class="tutorial-list">
+            <li><b>目標</b> — <b>3分間のタイムアタック</b>。時間切れまで生き延びればクリア、体力が尽きたら失敗。ハイスコアを狙おう。</li>
             <li><b>投入</b> — 画面下のレーンをタップした位置からストーンが落ちます。山を押して手前に落とそう。</li>
-            <li><b>ペイアウト</b> — 手前に落ちたストーンは +2 個。同時にストーブに入り<b>室温が上がります</b>。</li>
-            <li><b>コンボ</b> — 続けて落ちるとスコア倍率アップ。<b>5 連鎖ごとにストーン、10 連鎖で大玉</b>がもらえます。</li>
+            <li><b>ペイアウト</b> — 手前に落ちたストーンは +1 個。同時にストーブに入り<b>室温が上がります</b>。</li>
+            <li><b>コンボ</b> — 0.4秒以内に続けて落ちるとスコア倍率アップ。<b>5 連鎖ごとにストーン、10 連鎖で大玉</b>がもらえます。</li>
+            <li><b>ロウリュ</b> — 狙った場所の山へ<b>即座に衝撃を与えて手前へ押し出す</b>攻略ツール。詰まった山をほぐしてコンボを作ろう。</li>
             <li><b>適温を保つ</b> — 60〜84℃が基本。<b>85〜94℃が最高効率</b>ですが体力が減ります。冷えすぎても減ります。</li>
             <li><b>ととのい</b> — MAXで「水風呂へ」が点灯。<b>入水した瞬間の温度がそのまま倍率</b>（最大×3）。放置すると弱い外気浴になります。</li>
-            <li><b>外気浴</b> — 倍率つきのフィーバー。投入し放題・体力ダメージなし。セットが進むほど熱くなります。</li>
-            <li><b>アイテム</b> — 🥫オロポ=回復 / 🌿ヴィヒタ=山崩し / 🎩ハット=耐熱 / ⏳砂時計=延長。手前に落として発動。</li>
+            <li><b>外気浴とパーク</b> — 手動で入水すると倍率つきの外気浴に入る前に<b>パークを3択で選べます</b>。永続強化を積み重ねてビルドを作ろう。</li>
+            <li><b>アイテム</b> — 🥫オロポ=回復。🌿ヴィヒタ／🎩ハット／⏳砂時計は<b>永続レリック</b>。拾うほど効果が積み上がります。</li>
             <li><b>体力0でゲームオーバー</b>。</li>
           </ol>
           <button id="btn-tutorial-close" class="btn btn-primary" type="button">はじめる</button>
@@ -148,7 +159,7 @@
 
         <!-- リザルト -->
         <section id="screen-result" class="screen" hidden>
-          <h2 class="screen-title">のぼせました</h2>
+          <h2 id="result-heading" class="screen-title">のぼせました</h2>
           <div id="result-newrecord" class="new-record" hidden>NEW RECORD!</div>
           <div class="result-score" id="result-score">0</div>
           <dl class="result-stats">
