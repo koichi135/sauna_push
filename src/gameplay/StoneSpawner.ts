@@ -19,15 +19,16 @@ export class StoneSpawner {
    *
    * @param normalizedX -1..1 の投入レーン上の位置
    * @param nowSec GameLoop.now（ゲーム内経過秒）
+   * @param big 大玉ストーンとして投入する
    */
-  tryThrow(normalizedX: number, nowSec: number, fever: boolean): TrackedBody | null {
+  tryThrow(normalizedX: number, nowSec: number, fever: boolean, big = false): TrackedBody | null {
     const cooldown = (fever ? BALANCE.spawn.feverCooldownMs : BALANCE.spawn.cooldownMs) / 1000;
     if (nowSec - this.lastThrowSec < cooldown) return null;
     this.lastThrowSec = nowSec;
 
     const maxX = BALANCE.spawn.maxAbsX;
     const x = Math.max(-maxX, Math.min(maxX, normalizedX * maxX));
-    return this.physics.spawnStone(x, BALANCE.spawn.y, BALANCE.spawn.z, BALANCE.spawn.initialVelocityZ);
+    return this.physics.spawnStone(x, BALANCE.spawn.y, BALANCE.spawn.z, BALANCE.spawn.initialVelocityZ, big);
   }
 
   /** 現在クールダウン中か（UI の投入レーン表示用） */

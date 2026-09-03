@@ -8,11 +8,16 @@ export interface HudState {
   payout: Payout;
   fever: boolean;
   feverMultiplier: number;
+  /** フィーバーの残り秒数と進捗 0..1 */
+  feverRemaining: number;
+  feverProgress: number;
   /** 水風呂ボタンを点灯させるか */
   coldBathReady: boolean;
   /** 点灯中に表示する「いま入水したら」の倍率と秒数 */
   pendingMultiplier: number;
   pendingDuration: number;
+  /** MAX 放置から自動入水までの残り割合 1..0（未点灯なら 0） */
+  autoBathRatio: number;
   /** 投入可能か（クールダウン・手持ち） */
   canThrow: boolean;
   throwReady: boolean;
@@ -21,7 +26,11 @@ export interface HudState {
   /** ロウリュのクールタイム進捗 0（明け）..1（直後） */
   loylyCooldownRatio: number;
   loylyCooldownSec: number;
+  /** コンボ窓の残り割合 1..0 */
+  comboWindowRatio: number;
 }
+
+export type PopupKind = 'normal' | 'combo' | 'big' | 'bonus';
 
 /**
  * HUD（仕様 9章）。DOM オーバーレイで構成する。
@@ -30,12 +39,19 @@ export interface HudState {
 export class HUD {
   private readonly root = el('hud');
   private readonly scoreValue = el('score-value');
+  private readonly setBadge = el('set-badge');
   private readonly feverBadge = el('fever-badge');
+  private readonly feverMult = el('fever-mult');
+  private readonly feverTime = el('fever-time');
+  private readonly feverFill = el('fever-fill');
+  private readonly statusChips = el('status-chips');
+  private readonly shieldChip = el('chip-shield');
   private readonly tempBand = el('temp-band');
   private readonly tempValue = el('temp-value');
   private readonly tempBands = el('temp-bands');
   private readonly tempMarker = el('temp-marker');
   private readonly totonoiFill = el('totonoi-fill');
+  private readonly totonoiAuto = el('totonoi-auto');
   private readonly totonoiBar: HTMLElement;
   private readonly staminaFill = el('stamina-fill');
   private readonly staminaBar: HTMLElement;
@@ -47,13 +63,26 @@ export class HUD {
   private readonly loylyCooldown = el('loyly-cooldown');
   private readonly throwLane = el('throw-lane');
   private readonly throwLaneMarker = el('throw-lane-marker');
+  private readonly throwLaneText = el('throw-lane-text');
+  private readonly bigStoneBadge = el('big-stone-badge');
   private readonly aimOverlay = el('aim-overlay');
   private readonly aimTimerFill = el('aim-timer-fill');
+  private readonly combo = el('combo');
+  private readonly comboCount = el('combo-count');
+  private readonly comboMult = el('combo-mult');
+  private readonly comboWindowFill = el('combo-window-fill');
+  private readonly popupLayer = el('popup-layer');
   private readonly toastArea = el('toast-area');
   private readonly vignette = el('vignette');
   private readonly flash = el('flash');
 
   private displayedScore = 0;
+  private lastCombo = 0;
+  private readonly popups: HTMLElement[] = [];
+  private static readonly MAX_POPUPS = 14;
+  /** 直近のペイアウト表示。短い間隔で続く落下は 1 つの数字に積み上げる */
+  private mergedPayout: { node: HTMLElement; amount: number; at: number } | null = null;
+  private static readonly PAYOUT_MERGE_MS = 380;
 
   constructor() {
     this.totonoiBar = this.totonoiFill.parentElement as HTMLElement;
@@ -107,6 +136,9 @@ export class HUD {
       this.scoreValue.textContent = String(this.displayedScore);
     }
 
+    // セット（ととのい回数 + 1）
+    this.setBadge.textContent = `SET ${payout.totonoiCount + 1}`;
+
     // 温度（縦の温度計。下端が 0℃、上端が 100℃）
     const tempPct = (gauges.temperature / BALANCE.temperature.max) * 100;
     this.tempMarker.style.bottom = `${tempPct}%`;
@@ -118,34 +150,52 @@ export class HUD {
       child.classList.toggle('active', (child as HTMLElement).dataset.band === band.id);
     }
 
-    // ととのい
+    // ととのい。MAX 中は自動入水までの残りを白い帯で示す
     this.totonoiFill.style.width = `${(gauges.totonoi / BALANCE.totonoi.max) * 100}%`;
     this.totonoiBar.classList.toggle('ready', gauges.isTotonoiReady);
+    this.totonoiAuto.style.width = `${Math.max(0, state.autoBathRatio) * 100}%`;
+    this.totonoiAuto.hidden = state.autoBathRatio <= 0;
 
     // 体力
     const staminaRatio = gauges.stamina / BALANCE.stamina.max;
     this.staminaFill.style.width = `${staminaRatio * 100}%`;
     const warning = staminaRatio <= BALANCE.stamina.warningRatio;
     this.staminaBar.classList.toggle('warning', warning);
+    this.staminaBar.classList.toggle('shielded', gauges.hasHeatShield);
 
     // 手持ちストーン
     this.stoneCount.textContent = String(payout.stoneCount);
     this.stoneCountBox.classList.toggle('starving', payout.isStarving);
 
-    // 周縁の赤み: 高温 or 低体力（仕様 10章 2 / 6.3）
+    // 周縁の赤み: 高温 or 低体力（仕様 10章 2 / 6.3）。冷えすぎは青
     const heatVignette = Math.max(0, (gauges.temperature - 80) / 20);
+    const coldVignette = band.id === 'cold' && !state.fever ? 0.5 : 0;
     const lowStamina = warning ? 1 - staminaRatio / BALANCE.stamina.warningRatio : 0;
-    this.vignette.style.opacity = String(Math.min(0.9, heatVignette * 0.55 + lowStamina * 0.55));
+    this.vignette.style.opacity = String(
+      Math.min(0.9, heatVignette * 0.55 + lowStamina * 0.55 + coldVignette),
+    );
     this.vignette.classList.toggle('pulsing', warning);
+    this.vignette.classList.toggle('cold', coldVignette > 0 && heatVignette === 0 && lowStamina === 0);
 
-    // フィーバー倍率
+    // フィーバー倍率と残り時間
     this.feverBadge.hidden = !state.fever;
-    if (state.fever) this.feverBadge.textContent = `×${state.feverMultiplier.toFixed(1)}`;
+    if (state.fever) {
+      this.feverMult.textContent = `×${state.feverMultiplier.toFixed(1)}`;
+      this.feverTime.textContent = `${state.feverRemaining.toFixed(1)}s`;
+      this.feverFill.style.width = `${Math.max(0, 1 - state.feverProgress) * 100}%`;
+    }
+
+    // 状態チップ（サウナハット）
+    const shield = gauges.heatShieldSec;
+    this.shieldChip.hidden = shield <= 0;
+    if (shield > 0) this.shieldChip.textContent = `🎩 耐熱 ${shield.toFixed(1)}s`;
+    this.statusChips.hidden = shield <= 0;
 
     // 水風呂ボタン（点灯時のみ表示）
     this.coldBathBtn.hidden = !state.coldBathReady;
     if (state.coldBathReady) {
       this.coldBathHint.textContent = `×${state.pendingMultiplier.toFixed(1)} / ${state.pendingDuration.toFixed(1)}秒`;
+      this.coldBathBtn.classList.toggle('hot', state.pendingMultiplier >= 2.0);
     }
 
     // ロウリュボタン: クールタイムは下から埋まる影で表す
@@ -158,6 +208,39 @@ export class HUD {
     // 投入レーン。ロウリュモード中は投入できない（水をかけるモードのため）
     this.throwLane.classList.toggle('cooldown', !state.throwReady);
     this.throwLane.classList.toggle('disabled', !state.canThrow || state.loylyActive);
+    const big = payout.bigStoneCharges > 0;
+    this.throwLane.classList.toggle('big', big);
+    this.bigStoneBadge.hidden = !big;
+    if (big) this.bigStoneBadge.textContent = `大玉 ×${payout.bigStoneCharges}`;
+    this.throwLaneText.textContent = state.fever
+      ? 'フィーバー中は投入し放題！'
+      : big
+        ? '次の投入は大玉ストーン'
+        : 'タップしてストーン投入';
+
+    // コンボ
+    this.updateCombo(payout.combo, payout.comboMultiplier, state.comboWindowRatio);
+  }
+
+  private updateCombo(combo: number, multiplier: number, windowRatio: number): void {
+    if (combo <= 1) {
+      // 1 個だけの落下はコンボとして見せない（ノイズになる）
+      this.combo.hidden = true;
+      this.lastCombo = combo;
+      return;
+    }
+    this.combo.hidden = false;
+    this.comboWindowFill.style.width = `${windowRatio * 100}%`;
+    if (combo !== this.lastCombo) {
+      this.comboCount.textContent = String(combo);
+      this.comboMult.textContent = `×${multiplier.toFixed(1)}`;
+      this.combo.classList.toggle('big', combo >= BALANCE.combo.bigStoneEvery);
+      this.combo.classList.toggle('mid', combo >= BALANCE.combo.milestoneEvery && combo < BALANCE.combo.bigStoneEvery);
+      this.combo.classList.remove('pop');
+      void this.combo.offsetWidth;
+      this.combo.classList.add('pop');
+      this.lastCombo = combo;
+    }
   }
 
   /** 投入位置にフィードバックを出す */
@@ -181,11 +264,69 @@ export class HUD {
     this.scoreValue.classList.add('bump');
   }
 
-  toast(text: string): void {
+  /**
+   * 画面座標に浮かぶスコア表示。ペイアウト口の位置を 3D から投影して呼ぶ。
+   * 同時表示数を抑え、古いものから消す。
+   */
+  popup(screenX: number, screenY: number, text: string, kind: PopupKind = 'normal'): void {
+    this.spawnPopup(screenX, screenY, text, kind, 950);
+  }
+
+  /**
+   * ペイアウトのスコア表示。直前の表示から PAYOUT_MERGE_MS 以内なら同じ数字に足し込む。
+   * 山が崩れて連続で落ちるとき、+10 +12 +11 … と散らばるより 1 つの数字が
+   * 膨らんでいくほうが「まとめて落ちた」感が出るし、重なって読めなくならない。
+   */
+  payoutPopup(screenX: number, screenY: number, amount: number, kind: PopupKind): void {
+    const now = performance.now();
+    const last = this.mergedPayout;
+    if (last && now - last.at < HUD.PAYOUT_MERGE_MS && last.node.isConnected) {
+      last.amount += amount;
+      last.at = now;
+      last.node.textContent = `+${last.amount}`;
+      last.node.className = `popup popup-${kind} popup-grow`;
+      last.node.style.left = `${screenX}px`;
+      // アニメーションを頭から
+      void last.node.offsetWidth;
+      last.node.classList.remove('popup-grow');
+      void last.node.offsetWidth;
+      last.node.classList.add('popup-grow');
+      return;
+    }
+    const node = this.spawnPopup(screenX, screenY, `+${amount}`, kind, 1100);
+    this.mergedPayout = { node, amount, at: now };
+  }
+
+  private spawnPopup(
+    screenX: number,
+    screenY: number,
+    text: string,
+    kind: PopupKind,
+    lifeMs: number,
+  ): HTMLElement {
     const div = document.createElement('div');
-    div.className = 'toast';
+    div.className = `popup popup-${kind}`;
+    div.textContent = text;
+    div.style.left = `${screenX}px`;
+    div.style.top = `${screenY}px`;
+    this.popupLayer.appendChild(div);
+    this.popups.push(div);
+    while (this.popups.length > HUD.MAX_POPUPS) this.popups.shift()?.remove();
+    window.setTimeout(() => {
+      div.remove();
+      const i = this.popups.indexOf(div);
+      if (i >= 0) this.popups.splice(i, 1);
+    }, lifeMs);
+    return div;
+  }
+
+  toast(text: string, kind: 'normal' | 'good' | 'bad' = 'normal'): void {
+    const div = document.createElement('div');
+    div.className = `toast toast-${kind}`;
     div.textContent = text;
     this.toastArea.appendChild(div);
+    // 溜まりすぎると読めないので 3 つまで
+    while (this.toastArea.children.length > 3) this.toastArea.firstElementChild?.remove();
     window.setTimeout(() => div.remove(), 1600);
   }
 
@@ -198,12 +339,19 @@ export class HUD {
 
   reset(): void {
     this.displayedScore = 0;
+    this.lastCombo = 0;
     this.scoreValue.textContent = '0';
     this.vignette.style.opacity = '0';
-    this.vignette.classList.remove('pulsing');
+    this.vignette.classList.remove('pulsing', 'cold');
     this.feverBadge.hidden = true;
     this.coldBathBtn.hidden = true;
     this.aimOverlay.hidden = true;
+    this.combo.hidden = true;
+    this.bigStoneBadge.hidden = true;
+    this.statusChips.hidden = true;
     this.toastArea.replaceChildren();
+    this.popupLayer.replaceChildren();
+    this.popups.length = 0;
+    this.mergedPayout = null;
   }
 }

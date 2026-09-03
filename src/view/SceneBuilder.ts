@@ -199,20 +199,51 @@ export function buildScene(): SceneRefs {
   };
 }
 
-/** アイテムの3D表現。ロウリュ＝柄杓（円柱）、オロポ＝缶。 */
+/**
+ * アイテムの3D表現。物理コライダーは全アイテム共通の円柱（半径 item.radius）なので、
+ * 見た目はその中に収まる大きさにする。
+ *   can       オロポ＝缶
+ *   vihta     ヴィヒタ＝白樺の葉束（平たい円錐台）
+ *   hat       サウナハット＝フェルトの円錐
+ *   hourglass 砂時計＝くびれた回転体
+ */
 export function buildItemMesh(color: number, modelKey: string): THREE.Mesh {
   const i = BALANCE.physics.item;
   const material = new THREE.MeshStandardMaterial({
     color,
-    roughness: 0.35,
-    metalness: 0.4,
+    roughness: modelKey === 'hat' || modelKey === 'vihta' ? 0.9 : 0.35,
+    metalness: modelKey === 'hat' || modelKey === 'vihta' ? 0.0 : 0.4,
     emissive: new THREE.Color(color),
     emissiveIntensity: 0.35,
   });
-  const geometry =
-    modelKey === 'can'
-      ? new THREE.CylinderGeometry(i.radius * 0.72, i.radius * 0.72, i.thickness * 2.4, 14)
-      : new THREE.CylinderGeometry(i.radius, i.radius, i.thickness, 14);
+  let geometry: THREE.BufferGeometry;
+  switch (modelKey) {
+    case 'can':
+      geometry = new THREE.CylinderGeometry(i.radius * 0.72, i.radius * 0.72, i.thickness * 2.4, 14);
+      break;
+    case 'vihta':
+      geometry = new THREE.CylinderGeometry(i.radius * 0.95, i.radius * 0.55, i.thickness * 1.6, 7);
+      break;
+    case 'hat':
+      geometry = new THREE.ConeGeometry(i.radius * 0.95, i.thickness * 3.2, 16);
+      geometry.translate(0, i.thickness * 1.1, 0);
+      break;
+    case 'hourglass': {
+      const r = i.radius * 0.8;
+      const h = i.thickness * 2.6;
+      const points = [
+        new THREE.Vector2(r, -h / 2),
+        new THREE.Vector2(r * 0.9, -h * 0.3),
+        new THREE.Vector2(r * 0.18, 0),
+        new THREE.Vector2(r * 0.9, h * 0.3),
+        new THREE.Vector2(r, h / 2),
+      ];
+      geometry = new THREE.LatheGeometry(points, 14);
+      break;
+    }
+    default:
+      geometry = new THREE.CylinderGeometry(i.radius, i.radius, i.thickness, 14);
+  }
   const mesh = new THREE.Mesh(geometry, material);
   mesh.castShadow = true;
   return mesh;
